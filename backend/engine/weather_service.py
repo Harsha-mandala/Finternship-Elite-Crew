@@ -9,11 +9,12 @@ Slot filtering: only hours 09, 12, 15, 18, 21 (restaurant working hours).
 feels_like: taken from the slot closest to 15:00.
 """
 
-import os
-import json
-import sqlite3
-import random
-import requests
+import sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_BACKEND = os.path.dirname(_HERE)
+if _BACKEND not in sys.path:
+    sys.path.append(_BACKEND)
+from database import get_db_connection
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -108,27 +109,22 @@ def update_api_key(new_key: str) -> None:
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    return conn
+def _get_conn():
+    return get_db_connection()
 
 
 def _ensure_table() -> None:
     """Create weather_data table if it doesn't exist."""
-    conn = _get_conn()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS weather_data (
-            date        TEXT PRIMARY KEY,
-            max_temp    REAL,
-            min_temp    REAL,
-            condition   TEXT,
-            rainfall_mm REAL
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS weather_data (
+                date        TEXT PRIMARY KEY,
+                max_temp    REAL,
+                min_temp    REAL,
+                condition   TEXT,
+                rainfall_mm REAL
+            )
+        """)
 
 
 # Ensure table exists at import time (safe, idempotent).
@@ -218,20 +214,18 @@ def _mock_weather(target_date: str) -> dict:
 
 def _store_weather(weather: dict) -> None:
     """Insert or replace a weather record in weather_data table."""
-    conn = _get_conn()
-    conn.execute("""
-        INSERT OR REPLACE INTO weather_data
-            (date, max_temp, min_temp, condition, rainfall_mm)
-        VALUES (:date, :max_temp, :min_temp, :condition, :rainfall_mm)
-    """, {
-        'date':        weather['date'],
-        'max_temp':    weather.get('max_temp'),
-        'min_temp':    weather.get('min_temp'),
-        'condition':   weather.get('condition'),
-        'rainfall_mm': weather.get('rainfall_mm', 0.0),
-    })
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO weather_data
+                (date, max_temp, min_temp, condition, rainfall_mm)
+            VALUES (:date, :max_temp, :min_temp, :condition, :rainfall_mm)
+        """, {
+            'date':        weather['date'],
+            'max_temp':    weather.get('max_temp'),
+            'min_temp':    weather.get('min_temp'),
+            'condition':   weather.get('condition'),
+            'rainfall_mm': weather.get('rainfall_mm', 0.0),
+        })
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -241,12 +235,11 @@ def get_weather_for_date(target_date: str) -> Optional[dict]:
     Return cached weather from DB for target_date, or None if not found.
     """
     try:
-        conn = _get_conn()
-        row = conn.execute(
-            'SELECT * FROM weather_data WHERE date = ?', (target_date,)
-        ).fetchone()
-        conn.close()
-        return dict(row) if row else None
+        with get_db_connection() as conn:
+            row = conn.execute(
+                'SELECT * FROM weather_data WHERE date = ?', (target_date,)
+            ).fetchone()
+            return dict(row) if row else None
     except Exception as e:
         print(f'[weather_service] get_weather_for_date error: {e}')
         return None
@@ -259,16 +252,14 @@ def clear_weather_cache(days_ahead: int = 10) -> int:
     Returns the number of rows deleted.
     """
     try:
-        conn = _get_conn()
-        cutoff = date.today().isoformat()
-        future = (date.today() + timedelta(days=days_ahead)).isoformat()
-        result = conn.execute(
-            "DELETE FROM weather_data WHERE date >= ? AND date <= ?",
-            (cutoff, future)
-        )
-        deleted = result.rowcount
-        conn.commit()
-        conn.close()
+        with get_db_connection() as conn:
+            cutoff = date.today().isoformat()
+            future = (date.today() + timedelta(days=days_ahead)).isoformat()
+            result = conn.execute(
+                "DELETE FROM weather_data WHERE date >= ? AND date <= ?",
+                (cutoff, future)
+            )
+            deleted = result.rowcount
         print(f'[weather_service] Cleared {deleted} cached weather rows (today → +{days_ahead} days)')
         return deleted
     except Exception as e:
@@ -393,10 +384,9 @@ def refresh_weather_for_location() -> dict:
 def get_all_weather() -> list:
     """Return all weather records ordered by date."""
     try:
-        conn = _get_conn()
-        rows = conn.execute('SELECT * FROM weather_data ORDER BY date').fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+        with get_db_connection() as conn:
+            rows = conn.execute('SELECT * FROM weather_data ORDER BY date').fetchall()
+            return [dict(r) for r in rows]
     except Exception as e:
         print(f'[weather_service] get_all_weather error: {e}')
         return []

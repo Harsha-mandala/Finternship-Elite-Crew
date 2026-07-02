@@ -11,8 +11,12 @@ Each returned item dict has:
     item_name, category, recommended_qty, reason, base_avg, model_used
 """
 
-import os
-import sqlite3
+import sys
+_HERE   = os.path.dirname(os.path.abspath(__file__))
+_BACKEND = os.path.dirname(_HERE)
+if _BACKEND not in sys.path:
+    sys.path.append(_BACKEND)
+from database import get_db_connection
 from datetime import datetime, timedelta
 from math import ceil
 from typing import Optional, List
@@ -38,13 +42,8 @@ DB_PATH = os.environ.get(
 DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
 
-# ── DB helper ──────────────────────────────────────────────────────────────────
-
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    return conn
+def _get_conn():
+    return get_db_connection()
 
 
 # ── Rule-based helpers ─────────────────────────────────────────────────────────
@@ -136,7 +135,6 @@ def _rule_based_generate(target_date: str) -> List[dict]:
     Full rule-based recommendation pipeline.
     Returns list of recommendation dicts.
     """
-    conn       = _get_conn()
     target_dt  = datetime.strptime(target_date, '%Y-%m-%d')
     target_dow = target_dt.weekday()
     dow_name   = DAY_NAMES[target_dow]
@@ -154,71 +152,70 @@ def _rule_based_generate(target_date: str) -> List[dict]:
     # Upcoming festivals (for reason string)
     upcoming = get_upcoming_festivals(target_date, lookahead_days=7)
 
-    # All menu items
-    items = conn.execute(
-        'SELECT item_name, category FROM menu_items ORDER BY item_name'
-    ).fetchall()
-
     recommendations: List[dict] = []
 
-    for item_row in items:
-        item_name = item_row[0]
-        category  = item_row[1] or 'other'
+    with get_db_connection() as conn:
+        # All menu items
+        items = conn.execute(
+            'SELECT item_name, category FROM menu_items ORDER BY item_name'
+        ).fetchall()
 
-        # Base: try 7-day rolling avg, fall back to 30-day
-        base_avg = _get_rolling_avg(item_name, target_date, days=7, conn=conn)
-        if base_avg == 0:
-            base_avg = _get_rolling_avg(item_name, target_date, days=30, conn=conn)
-        if base_avg == 0:
-            continue   # Never sold — skip
+        for item_row in items:
+            item_name = item_row[0]
+            category  = item_row[1] or 'other'
 
-        dow_factor     = _get_dow_multiplier(item_name, target_dow, conn)
-        weather_factor = compute_weather_factor(category, weather)
-        trend_factor   = _get_trend_factor(item_name, target_date, conn)
+            # Base: try 7-day rolling avg, fall back to 30-day
+            base_avg = _get_rolling_avg(item_name, target_date, days=7, conn=conn)
+            if base_avg == 0:
+                base_avg = _get_rolling_avg(item_name, target_date, days=30, conn=conn)
+            if base_avg == 0:
+                continue   # Never sold — skip
 
-        raw_qty   = base_avg * dow_factor * weather_factor * festival_mult * trend_factor
-        final_qty = max(1, ceil(raw_qty * 1.10))   # +10% safety buffer
+            dow_factor     = _get_dow_multiplier(item_name, target_dow, conn)
+            weather_factor = compute_weather_factor(category, weather)
+            trend_factor   = _get_trend_factor(item_name, target_date, conn)
 
-        # ── Reason ─────────────────────────────────────────────────────────────
-        reasons: List[str] = []
+            raw_qty   = base_avg * dow_factor * weather_factor * festival_mult * trend_factor
+            final_qty = max(1, ceil(raw_qty * 1.10))   # +10% safety buffer
 
-        if festival_name:
-            reasons.append(f'\U0001f389 {festival_name}')
-        elif upcoming:
-            nxt = upcoming[0]
-            reasons.append(f'\U0001f4c5 {nxt["name"]} in {nxt["days_away"]}d')
+            # ── Reason ─────────────────────────────────────────────────────────────
+            reasons: List[str] = []
 
-        if dow_factor >= 1.10:
-            reasons.append(f'↑ {dow_name} peak day')
-        elif dow_factor <= 0.90:
-            reasons.append(f'↓ Slow {dow_name}')
+            if festival_name:
+                reasons.append(f'\U0001f389 {festival_name}')
+            elif upcoming:
+                nxt = upcoming[0]
+                reasons.append(f'\U0001f4c5 {nxt["name"]} in {nxt["days_away"]}d')
 
-        if weather_factor >= 1.15:
-            reasons.append(f'↑ {_get_weather_description(weather)}')
-        elif weather_factor <= 0.85:
-            reasons.append(f'↓ {_get_weather_description(weather)}')
+            if dow_factor >= 1.10:
+                reasons.append(f'↑ {dow_name} peak day')
+            elif dow_factor <= 0.90:
+                reasons.append(f'↓ Slow {dow_name}')
 
-        if trend_factor > 1.0:
-            reasons.append('↑ Trending up')
-        elif trend_factor < 1.0:
-            reasons.append('↓ Trending down')
+            if weather_factor >= 1.15:
+                reasons.append(f'↑ {_get_weather_description(weather)}')
+            elif weather_factor <= 0.85:
+                reasons.append(f'↓ {_get_weather_description(weather)}')
 
-        reason = ' | '.join(reasons) if reasons else f'Based on {dow_name} average'
+            if trend_factor > 1.0:
+                reasons.append('↑ Trending up')
+            elif trend_factor < 1.0:
+                reasons.append('↓ Trending down')
 
-        recommendations.append({
-            'item_name':       item_name,
-            'category':        category,
-            'recommended_qty': final_qty,
-            'reason':          reason,
-            'base_avg':        round(base_avg, 1),
-            'dow_factor':      round(dow_factor, 3),
-            'weather_factor':  round(weather_factor, 3),
-            'festival_factor': round(festival_mult, 3),
-            'trend_factor':    round(trend_factor, 3),
-            'model_used':      'rule_based',
-        })
+            reason = ' | '.join(reasons) if reasons else f'Based on {dow_name} average'
 
-    conn.close()
+            recommendations.append({
+                'item_name':       item_name,
+                'category':        category,
+                'recommended_qty': final_qty,
+                'reason':          reason,
+                'base_avg':        round(base_avg, 1),
+                'dow_factor':      round(dow_factor, 3),
+                'weather_factor':  round(weather_factor, 3),
+                'festival_factor': round(festival_mult, 3),
+                'trend_factor':    round(trend_factor, 3),
+                'model_used':      'rule_based',
+            })
 
     # Sort: category asc, then recommended_qty desc
     recommendations.sort(key=lambda x: (x['category'], -x['recommended_qty']))
@@ -294,21 +291,17 @@ def save_recommendations(target_date: str, recs: List[dict]) -> None:
     """
     Persist recommendations to the recommendations table.
     """
-    conn = _get_conn()
-    try:
+    with get_db_connection() as conn:
         conn.execute('DELETE FROM recommendations WHERE date = ?', (target_date,))
         for r in recs:
             conn.execute("""
                 INSERT INTO recommendations
-                    (date, item_name, recommended_qty, merchant_qty, reason)
+                    (date, item_name, recommended_qty, merchant_override, reason)
                 VALUES (?, ?, ?, ?, ?)
             """, (
                 target_date,
                 r.get('item_name'),
                 r.get('recommended_qty'),
-                r.get('merchant_qty'),
+                r.get('merchant_override', r.get('merchant_qty')),
                 r.get('reason'),
             ))
-        conn.commit()
-    finally:
-        conn.close()

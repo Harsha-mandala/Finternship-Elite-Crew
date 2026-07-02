@@ -18,10 +18,12 @@ Prediction flow:
   5. Generate human-readable reasons
 """
 
-import os
-import json
-import sqlite3
-import joblib
+import sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_BACKEND = os.path.dirname(_HERE)
+if _BACKEND not in sys.path:
+    sys.path.append(_BACKEND)
+from database import get_db_connection
 from datetime import datetime, timedelta
 from math import ceil
 from typing import Optional, List, Tuple
@@ -72,11 +74,8 @@ DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
 
 # ── DB connection ──────────────────────────────────────────────────────────────
 
-def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    return conn
+def _conn():
+    return get_db_connection()
 
 
 # ── Model info ─────────────────────────────────────────────────────────────────
@@ -117,14 +116,12 @@ def train_model() -> dict:
         raise RuntimeError('LightGBM or pandas not available — cannot train model.')
 
     print('[ml_engine] Starting model training...')
-    connection = _conn()
+    with get_db_connection() as connection:
+        fb = FeatureBuilder()
+        fb.fit_encoders(connection)
 
-    fb = FeatureBuilder()
-    fb.fit_encoders(connection)
-
-    print('[ml_engine] Building training features (this may take ~15-30s for 3500 rows)...')
-    df = fb.build_training_features(connection)
-    connection.close()
+        print('[ml_engine] Building training features (this may take ~15-30s for 3500 rows)...')
+        df = fb.build_training_features(connection)
 
     if df.empty:
         raise ValueError('No training data available in daily_sales table.')
@@ -368,7 +365,7 @@ def _generate_reason(
 
 # ── Main prediction entry point ────────────────────────────────────────────────
 
-def predict_for_date(target_date: str, conn: Optional[sqlite3.Connection] = None) -> List[dict]:
+def predict_for_date(target_date: str, conn: Optional[object] = None) -> List[dict]:
     """
     Generate order quantity predictions for all active items on target_date.
 
@@ -379,9 +376,9 @@ def predict_for_date(target_date: str, conn: Optional[sqlite3.Connection] = None
     Returns:
         List of dicts: {item_name, category, recommended_qty, reason, base_avg, model_used}
     """
-    own_conn = conn is None
-    if own_conn:
-        conn = _conn()
+    if conn is None:
+        with get_db_connection() as own_conn:
+            return predict_for_date(target_date, own_conn)
 
     try:
         # ── Weather ────────────────────────────────────────────────────────────
@@ -475,5 +472,4 @@ def predict_for_date(target_date: str, conn: Optional[sqlite3.Connection] = None
         return fallback_results
 
     finally:
-        if own_conn:
-            conn.close()
+        pass

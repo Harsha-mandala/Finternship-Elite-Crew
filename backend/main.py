@@ -70,6 +70,8 @@ if CONFIG_PATH != _BUNDLED_CONFIG and not os.path.exists(CONFIG_PATH) and os.pat
     except Exception as _cfg_err:
         print(f'[startup] Config seed failed ({_cfg_err})')
 
+from database import get_db_connection, initialize_database, IS_POSTGRES
+
 def _ensure_unit_price_column(db_path):
     try:
         import sqlite3 as _sqlite3
@@ -97,75 +99,45 @@ def _ensure_unit_price_column(db_path):
     except Exception as e:
         print(f"[startup] Failed to ensure unit_price column in {db_path}: {e}")
 
-# ── Render persistent-disk DB seeding ─────────────────────────────────────────
-# On Render, DB_PATH = /data/hotel_aditya.db (persistent disk).
-#
-# SAFE MERGE STRATEGY — never overwrites live uploaded data:
-#   • Empty disk  → full copy from bundled (first-time deploy)
-#   • Disk has data → INSERT OR IGNORE from bundled into disk
-#     (adds any missing historical rows; live uploads are untouched)
-_BUNDLED_DB = os.path.join(_HERE, 'hotel_aditya.db')
-
-# Ensure bundled DB has unit_price column
-_ensure_unit_price_column(_BUNDLED_DB)
-
-if DB_PATH != _BUNDLED_DB and os.path.exists(_BUNDLED_DB):
-    _disk_exists = os.path.exists(DB_PATH)
-    _disk_size   = os.path.getsize(DB_PATH) if _disk_exists else 0
-
-    if _disk_size == 0:
-        # Disk is completely empty — safe to do a full copy (first deploy)
-        try:
-            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-            _shutil.copy2(_BUNDLED_DB, DB_PATH)
-            print(f'[startup] Fresh disk — seeded DB from bundled ({os.path.getsize(_BUNDLED_DB)}B)')
-        except Exception as _seed_err:
-            print(f'[startup] DB seed failed ({_seed_err}), falling back to bundled DB')
-            DB_PATH = _BUNDLED_DB
-    else:
-        # Disk already has live data — MERGE bundled rows in without overwriting
-        try:
-            import sqlite3 as _sqlite3
-            _src_conn = _sqlite3.connect(_BUNDLED_DB)
-            _dst_conn = _sqlite3.connect(DB_PATH)
-            _dst_conn.execute('PRAGMA journal_mode=WAL')
-
-            # Ensure destination DB has unit_price column first
-            _dst_info = _dst_conn.execute("PRAGMA table_info(menu_items)").fetchall()
-            _dst_cols = [c[1] for c in _dst_info]
-            if 'unit_price' not in _dst_cols:
-                _dst_conn.execute("ALTER TABLE menu_items ADD COLUMN unit_price REAL DEFAULT 0.0")
+if not IS_POSTGRES:
+    _BUNDLED_DB = os.path.join(_HERE, 'hotel_aditya.db')
+    _ensure_unit_price_column(_BUNDLED_DB)
+    if DB_PATH != _BUNDLED_DB and os.path.exists(_BUNDLED_DB):
+        _disk_exists = os.path.exists(DB_PATH)
+        _disk_size   = os.path.getsize(DB_PATH) if _disk_exists else 0
+        if _disk_size == 0:
+            try:
+                os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+                _shutil.copy2(_BUNDLED_DB, DB_PATH)
+                print(f'[startup] Fresh disk — seeded DB from bundled ({os.path.getsize(_BUNDLED_DB)}B)')
+            except Exception as _seed_err:
+                print(f'[startup] DB seed failed ({_seed_err}), falling back to bundled DB')
+                DB_PATH = _BUNDLED_DB
+        else:
+            try:
+                import sqlite3 as _sqlite3
+                _src_conn = _sqlite3.connect(_BUNDLED_DB)
+                _dst_conn = _sqlite3.connect(DB_PATH)
+                _dst_conn.execute('PRAGMA journal_mode=WAL')
+                _dst_info = _dst_conn.execute("PRAGMA table_info(menu_items)").fetchall()
+                _dst_cols = [c[1] for c in _dst_info]
+                if 'unit_price' not in _dst_cols:
+                    _dst_conn.execute("ALTER TABLE menu_items ADD COLUMN unit_price REAL DEFAULT 0.0")
+                    _dst_conn.commit()
+                _sales_rows = _src_conn.execute('SELECT date, item_name, qty_sold, gross_revenue, source FROM daily_sales').fetchall()
+                _dst_conn.executemany('INSERT OR IGNORE INTO daily_sales (date, item_name, qty_sold, gross_revenue, source) VALUES (?,?,?,?,?)', _sales_rows)
+                _menu_rows = _src_conn.execute('SELECT item_name, category, avg_qty, unit_price FROM menu_items').fetchall()
+                _dst_conn.executemany('INSERT OR IGNORE INTO menu_items (item_name, category, avg_qty, unit_price) VALUES (?,?,?,?)', _menu_rows)
                 _dst_conn.commit()
+                _src_conn.close()
+                _dst_conn.close()
+                print(f'[startup] Merged bundled DB into persistent disk')
+            except Exception as _merge_err:
+                print(f'[startup] DB merge failed ({_merge_err})')
+    _ensure_unit_price_column(DB_PATH)
 
-            # Merge daily_sales (UNIQUE on date+item_name — duplicates are silently skipped)
-            _sales_rows = _src_conn.execute(
-                'SELECT date, item_name, qty_sold, gross_revenue, source FROM daily_sales'
-            ).fetchall()
-            _dst_conn.executemany(
-                'INSERT OR IGNORE INTO daily_sales '
-                '(date, item_name, qty_sold, gross_revenue, source) VALUES (?,?,?,?,?)',
-                _sales_rows
-            )
+initialize_database()
 
-            # Merge menu_items (UNIQUE on item_name — new items from bundled get added, including unit_price)
-            _menu_rows = _src_conn.execute(
-                'SELECT item_name, category, avg_qty, unit_price FROM menu_items'
-            ).fetchall()
-            _dst_conn.executemany(
-                'INSERT OR IGNORE INTO menu_items (item_name, category, avg_qty, unit_price) VALUES (?,?,?,?)',
-                _menu_rows
-            )
-
-            _dst_conn.commit()
-            _src_conn.close()
-            _dst_conn.close()
-            print(f'[startup] Merged bundled DB into persistent disk '
-                  f'({len(_sales_rows)} sales rows, {len(_menu_rows)} menu rows — INSERT OR IGNORE, no overwrites)')
-        except Exception as _merge_err:
-            print(f'[startup] DB merge failed ({_merge_err}) — persistent disk DB used as-is')
-
-# Ensure destination DB has unit_price column
-_ensure_unit_price_column(DB_PATH)
 
 
 
@@ -205,11 +177,8 @@ def _save_config(updates: dict) -> None:
 
 # ── DB helper ──────────────────────────────────────────────────────────────────
 
-def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    return conn
+def _conn():
+    return get_db_connection()
 
 
 # ── Engine imports ─────────────────────────────────────────────────────────────
@@ -271,10 +240,9 @@ app.add_middleware(
 def health_check():
     """Full health check — DB stats + model info."""
     try:
-        conn = _conn()
-        sales_rows  = conn.execute('SELECT COUNT(*) FROM daily_sales').fetchone()[0]
-        menu_items  = conn.execute('SELECT COUNT(*) FROM menu_items').fetchone()[0]
-        conn.close()
+        with get_db_connection() as conn:
+            sales_rows  = conn.execute('SELECT COUNT(*) FROM daily_sales').fetchone()[0]
+            menu_items  = conn.execute('SELECT COUNT(*) FROM menu_items').fetchone()[0]
         db_status = 'ok'
     except Exception as e:
         sales_rows = 0
@@ -312,62 +280,59 @@ def dashboard_summary():
     Today's revenue, top-selling items, weather, and festival info.
     """
     today = get_today_str()
-    conn  = _conn()
+    with get_db_connection() as conn:
+        # Today's revenue and units sold
+        rev_row = conn.execute(
+            'SELECT COALESCE(SUM(gross_revenue), 0), COALESCE(SUM(qty_sold), 0) '
+            'FROM daily_sales WHERE date = ?', (today,)
+        ).fetchone()
+        today_revenue  = round(float(rev_row[0]), 2)
+        today_qty_sold = int(rev_row[1])
 
-    # Today's revenue and units sold
-    rev_row = conn.execute(
-        'SELECT COALESCE(SUM(gross_revenue), 0), COALESCE(SUM(qty_sold), 0) '
-        'FROM daily_sales WHERE date = ?', (today,)
-    ).fetchone()
-    today_revenue  = round(float(rev_row[0]), 2)
-    today_qty_sold = int(rev_row[1])
+        # Top 5 items by qty today
+        top_rows = conn.execute(
+            'SELECT item_name, SUM(qty_sold) AS qty, SUM(gross_revenue) AS rev '
+            'FROM daily_sales WHERE date = ? '
+            'GROUP BY item_name ORDER BY qty DESC LIMIT 5',
+            (today,)
+        ).fetchall()
+        top_items = [
+            {'item_name': r[0], 'qty_sold': int(r[1]), 'revenue': round(float(r[2]), 2)}
+            for r in top_rows
+        ]
 
-    # Top 5 items by qty today
-    top_rows = conn.execute(
-        'SELECT item_name, SUM(qty_sold) AS qty, SUM(gross_revenue) AS rev '
-        'FROM daily_sales WHERE date = ? '
-        'GROUP BY item_name ORDER BY qty DESC LIMIT 5',
-        (today,)
-    ).fetchall()
-    top_items = [
-        {'item_name': r[0], 'qty_sold': int(r[1]), 'revenue': round(float(r[2]), 2)}
-        for r in top_rows
-    ]
+        # Total menu items count
+        menu_count = conn.execute('SELECT COUNT(*) FROM menu_items').fetchone()[0]
 
-    # Total menu items count
-    menu_count = conn.execute('SELECT COUNT(*) FROM menu_items').fetchone()[0]
+        # Weather for today (or tomorrow if today not available)
+        weather = None
+        try:
+            from engine.weather_service import get_weather_for_date
+            weather = get_weather_for_date(today)
+            if weather is None:
+                weather = get_weather_for_date((get_today() + timedelta(days=1)).isoformat())
+        except Exception:
+            pass
 
-    # Weather for today (or tomorrow if today not available)
-    weather = None
-    try:
-        from engine.weather_service import get_weather_for_date
-        weather = get_weather_for_date(today)
-        if weather is None:
-            weather = get_weather_for_date((get_today() + timedelta(days=1)).isoformat())
-    except Exception:
-        pass
+        # Festival for today
+        festival_info: dict = {}
+        try:
+            from engine.festival_service import get_festival_multiplier, get_upcoming_festivals
+            mult, name = get_festival_multiplier(today)
+            upcoming   = get_upcoming_festivals(today, lookahead_days=7)
+            festival_info = {
+                'today': {'name': name, 'multiplier': mult} if name else None,
+                'upcoming': upcoming[:3],
+            }
+        except Exception:
+            pass
 
-    # Festival for today
-    festival_info: dict = {}
-    try:
-        from engine.festival_service import get_festival_multiplier, get_upcoming_festivals
-        mult, name = get_festival_multiplier(today)
-        upcoming   = get_upcoming_festivals(today, lookahead_days=7)
-        festival_info = {
-            'today': {'name': name, 'multiplier': mult} if name else None,
-            'upcoming': upcoming[:3],
-        }
-    except Exception:
-        pass
-
-    # Total revenue this month
-    month_start = today[:7] + '-01'
-    month_rev   = conn.execute(
-        'SELECT COALESCE(SUM(gross_revenue), 0) FROM daily_sales WHERE date >= ?',
-        (month_start,)
-    ).fetchone()[0]
-
-    conn.close()
+        # Total revenue this month
+        month_start = today[:7] + '-01'
+        month_rev   = conn.execute(
+            'SELECT COALESCE(SUM(gross_revenue), 0) FROM daily_sales WHERE date >= ?',
+            (month_start,)
+        ).fetchone()[0]
 
     return {
         'date':           today,
@@ -388,28 +353,34 @@ def revenue_trend(
     end_date: Optional[str] = Query(default=None)
 ):
     """Daily gross revenue for a date range or the last N days."""
-    conn = _conn()
     if start_date and end_date:
-        rows = conn.execute(
-            'SELECT date, ROUND(SUM(gross_revenue), 2) AS revenue '
-            'FROM daily_sales WHERE date >= ? AND date <= ? '
-            'GROUP BY date ORDER BY date ASC',
-            (start_date, end_date)
-        ).fetchall()
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                'SELECT date, ROUND(SUM(gross_revenue), 2) AS revenue '
+                'FROM daily_sales WHERE date >= ? AND date <= ? '
+                'GROUP BY date ORDER BY date ASC',
+                (start_date, end_date)
+            ).fetchall()
     else:
         d = days or 30
         cutoff = (get_today() - timedelta(days=d)).isoformat()
-        rows = conn.execute(
-            'SELECT date, ROUND(SUM(gross_revenue), 2) AS revenue '
-            'FROM daily_sales WHERE date >= ? '
-            'GROUP BY date ORDER BY date ASC',
-            (cutoff,)
-        ).fetchall()
-    conn.close()
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                'SELECT date, ROUND(SUM(gross_revenue), 2) AS revenue '
+                'FROM daily_sales WHERE date >= ? '
+                'GROUP BY date ORDER BY date ASC',
+                (cutoff,)
+            ).fetchall()
     return {
         'start_date': start_date,
         'end_date': end_date,
-        'series': [{'date': r[0], 'revenue': float(r[1])} for r in rows],
+        'series': [
+            {
+                'date': r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0]),
+                'revenue': float(r[1])
+            }
+            for r in rows
+        ],
     }
 
 
@@ -420,34 +391,34 @@ def category_trends(
     end_date: Optional[str] = Query(default=None)
 ):
     """Revenue and qty by category for a date range or the last N days."""
-    conn   = _conn()
     if start_date and end_date:
-        rows = conn.execute(
-            'SELECT mi.category, '
-            '       ROUND(SUM(ds.gross_revenue), 2) AS revenue, '
-            '       SUM(ds.qty_sold) AS qty '
-            'FROM daily_sales ds '
-            'LEFT JOIN menu_items mi ON ds.item_name = mi.item_name '
-            'WHERE ds.date >= ? AND ds.date <= ? '
-            'GROUP BY mi.category '
-            'ORDER BY revenue DESC',
-            (start_date, end_date)
-        ).fetchall()
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                'SELECT mi.category, '
+                '       ROUND(SUM(ds.gross_revenue), 2) AS revenue, '
+                '       SUM(ds.qty_sold) AS qty '
+                'FROM daily_sales ds '
+                'LEFT JOIN menu_items mi ON ds.item_name = mi.item_name '
+                'WHERE ds.date >= ? AND ds.date <= ? '
+                'GROUP BY mi.category '
+                'ORDER BY revenue DESC',
+                (start_date, end_date)
+            ).fetchall()
     else:
         d = days or 30
         cutoff = (get_today() - timedelta(days=d)).isoformat()
-        rows = conn.execute(
-            'SELECT mi.category, '
-            '       ROUND(SUM(ds.gross_revenue), 2) AS revenue, '
-            '       SUM(ds.qty_sold) AS qty '
-            'FROM daily_sales ds '
-            'LEFT JOIN menu_items mi ON ds.item_name = mi.item_name '
-            'WHERE ds.date >= ? '
-            'GROUP BY mi.category '
-            'ORDER BY revenue DESC',
-            (cutoff,)
-        ).fetchall()
-    conn.close()
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                'SELECT mi.category, '
+                '       ROUND(SUM(ds.gross_revenue), 2) AS revenue, '
+                '       SUM(ds.qty_sold) AS qty '
+                'FROM daily_sales ds '
+                'LEFT JOIN menu_items mi ON ds.item_name = mi.item_name '
+                'WHERE ds.date >= ? '
+                'GROUP BY mi.category '
+                'ORDER BY revenue DESC',
+                (cutoff,)
+            ).fetchall()
     return {
         'start_date': start_date,
         'end_date': end_date,
@@ -461,34 +432,31 @@ def category_trends(
 @dash_router.get('/actual-vs-predicted')
 def actual_vs_predicted():
     """Compare today's actual sales vs predicted sales by category."""
-    conn = _conn()
     today = get_today_str()
-    
-    # 1. Actuals for today by category
-    actual_rows = conn.execute(
-        'SELECT mi.category, SUM(ds.qty_sold) '
-        'FROM daily_sales ds '
-        'LEFT JOIN menu_items mi ON ds.item_name = mi.item_name '
-        'WHERE ds.date = ? '
-        'GROUP BY mi.category',
-        (today,)
-    ).fetchall()
-    
-    actuals = { (r[0] or 'other'): int(r[1]) for r in actual_rows }
-    
-    # 2. Predicted for today by category
-    predicted = {}
-    if RECS_AVAILABLE:
-        try:
-            recs = generate_recommendations(today)
-            for r in recs:
-                cat = r.get('category', 'other')
-                predicted[cat] = predicted.get(cat, 0) + int(r.get('recommended_qty', 0))
-        except Exception as e:
-            print(f'[main] Error generating predictions for chart: {e}')
-            
-    conn.close()
-    
+    with get_db_connection() as conn:
+        # 1. Actuals for today by category
+        actual_rows = conn.execute(
+            'SELECT mi.category, SUM(ds.qty_sold) '
+            'FROM daily_sales ds '
+            'LEFT JOIN menu_items mi ON ds.item_name = mi.item_name '
+            'WHERE ds.date = ? '
+            'GROUP BY mi.category',
+            (today,)
+        ).fetchall()
+        
+        actuals = { (r[0] or 'other'): int(r[1]) for r in actual_rows }
+        
+        # 2. Predicted for today by category
+        predicted = {}
+        if RECS_AVAILABLE:
+            try:
+                recs = generate_recommendations(today)
+                for r in recs:
+                    cat = r.get('category', 'other')
+                    predicted[cat] = predicted.get(cat, 0) + int(r.get('recommended_qty', 0))
+            except Exception as e:
+                print(f'[main] Error generating predictions for chart: {e}')
+        
     all_cats = set(actuals.keys()).union(set(predicted.keys()))
     results = []
     for cat in all_cats:
@@ -505,145 +473,145 @@ def actual_vs_predicted():
 @dash_router.get('/insights')
 def dashboard_insights():
     """Generate business insights using SQL queries on daily_sales and menu_items."""
-    conn = _conn()
     try:
-        # Find date range of available data
-        dates = conn.execute('SELECT MIN(date), MAX(date) FROM daily_sales').fetchone()
-        if not dates or not dates[0]:
-            return {'insights': []}
-        min_date, max_date = dates[0], dates[1]
-        max_dt = datetime.strptime(max_date, '%Y-%m-%d')
+        with get_db_connection() as conn:
+            # Find date range of available data
+            dates = conn.execute('SELECT MIN(date), MAX(date) FROM daily_sales').fetchone()
+            if not dates or not dates[0]:
+                return {'insights': []}
+            
+            min_date = dates[0].isoformat() if hasattr(dates[0], 'isoformat') else str(dates[0])
+            max_date = dates[1].isoformat() if hasattr(dates[1], 'isoformat') else str(dates[1])
+            max_dt = datetime.strptime(max_date, '%Y-%m-%d')
 
-        # Define latest week and previous week boundaries
-        w1_start = (max_dt - timedelta(days=6)).strftime('%Y-%m-%d')
-        w1_end = max_date
-        w2_start = (max_dt - timedelta(days=13)).strftime('%Y-%m-%d')
-        w2_end = (max_dt - timedelta(days=7)).strftime('%Y-%m-%d')
+            # Define latest week and previous week boundaries
+            w1_start = (max_dt - timedelta(days=6)).strftime('%Y-%m-%d')
+            w1_end = max_date
+            w2_start = (max_dt - timedelta(days=13)).strftime('%Y-%m-%d')
+            w2_end = (max_dt - timedelta(days=7)).strftime('%Y-%m-%d')
 
-        insights = []
+            insights = []
 
-        # 1. Best Day of Week
-        dow_rows = conn.execute("""
-            SELECT CAST(strftime('%w', date) AS INTEGER) AS dow, AVG(daily_rev) AS avg_rev
-            FROM (
-                SELECT date, SUM(gross_revenue) AS daily_rev
+            # 1. Best Day of Week
+            dow_rows = conn.execute("""
+                SELECT CAST(strftime('%w', date) AS INTEGER) AS dow, AVG(daily_rev) AS avg_rev
+                FROM (
+                    SELECT date, SUM(gross_revenue) AS daily_rev
+                    FROM daily_sales
+                    GROUP BY date
+                )
+                GROUP BY dow
+                ORDER BY avg_rev DESC
+            """).fetchall()
+            if dow_rows:
+                DOW_MAP = {0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday'}
+                best_dow = DOW_MAP.get(int(dow_rows[0][0]))
+                best_rev = float(dow_rows[0][1])
+                insights.append({
+                    'type': 'best_day',
+                    'title': '📅 Best Day of the Week',
+                    'text': f"On average, **{best_dow}s** are your highest earning days, generating **₹{best_rev:,.0f}** in revenue, followed closely by other weekend slots.",
+                    'badge': 'Surge Pattern',
+                    'color': 'success'
+                })
+
+            # 2. Trending Items (Week-over-week growth)
+            trend_rows = conn.execute("""
+                SELECT
+                    w1.item_name,
+                    w1.w1_qty,
+                    COALESCE(w2.w2_qty, 0) AS w2_qty,
+                    w1.w1_qty - COALESCE(w2.w2_qty, 0) AS diff
+                FROM (
+                    SELECT item_name, SUM(qty_sold) AS w1_qty
+                    FROM daily_sales
+                    WHERE date >= ? AND date <= ?
+                    GROUP BY item_name
+                ) w1
+                LEFT JOIN (
+                    SELECT item_name, SUM(qty_sold) AS w2_qty
+                    FROM daily_sales
+                    WHERE date >= ? AND date <= ?
+                    GROUP BY item_name
+                ) w2 ON w1.item_name = w2.item_name
+                ORDER BY diff DESC
+                LIMIT 1
+            """, (w1_start, w1_end, w2_start, w2_end)).fetchone()
+
+            if trend_rows and trend_rows[3] > 0:
+                item_name, w1_qty, w2_qty, diff = trend_rows[0], int(trend_rows[1]), int(trend_rows[2]), int(trend_rows[3])
+                insights.append({
+                    'type': 'trending_up',
+                    'title': '📈 Trending Up This Week',
+                    'text': f"Demand for **{item_name}** has surged. You sold **{w1_qty} units** this week, up from **{w2_qty} units** last week (a +{diff} plates increase).",
+                    'badge': 'Trending Up',
+                    'color': 'primary'
+                })
+
+            # 3. Weekend vs Weekday Surge
+            weekend_rows = conn.execute("""
+                SELECT
+                    AVG(CASE WHEN CAST(strftime('%w', date) AS INTEGER) IN (0, 5, 6) THEN daily_rev END) AS weekend_avg,
+                    AVG(CASE WHEN CAST(strftime('%w', date) AS INTEGER) NOT IN (0, 5, 6) THEN daily_rev END) AS weekday_avg
+                FROM (
+                    SELECT date, SUM(gross_revenue) AS daily_rev
+                    FROM daily_sales
+                    GROUP BY date
+                )
+            """).fetchone()
+            if weekend_rows and weekend_rows[0] and weekend_rows[1]:
+                wend, wday = float(weekend_rows[0]), float(weekend_rows[1])
+                ratio = wend / wday
+                insights.append({
+                    'type': 'weekend_ratio',
+                    'title': '⚖️ Weekend Surge vs Weekdays',
+                    'text': f"Weekend daily sales (Fri-Sun) average **₹{wend:,.0f}**, which is **{ratio:.1f}x higher** than your weekday average (₹{wday:,.0f}). Optimize inventory counts for weekend prep.",
+                    'badge': 'Sales Balance',
+                    'color': 'warning'
+                })
+
+            # 4. Most Consistent Star Performer
+            consistent_row = conn.execute("""
+                SELECT item_name, COUNT(DISTINCT date) AS active_days
                 FROM daily_sales
-                GROUP BY date
-            )
-            GROUP BY dow
-            ORDER BY avg_rev DESC
-        """).fetchall()
-        if dow_rows:
-            DOW_MAP = {0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday'}
-            best_dow = DOW_MAP.get(dow_rows[0][0])
-            best_rev = float(dow_rows[0][1])
-            insights.append({
-                'type': 'best_day',
-                'title': '📅 Best Day of the Week',
-                'text': f"On average, **{best_dow}s** are your highest earning days, generating **₹{best_rev:,.0f}** in revenue, followed closely by other weekend slots.",
-                'badge': 'Surge Pattern',
-                'color': 'success'
-            })
-
-        # 2. Trending Items (Week-over-week growth)
-        trend_rows = conn.execute("""
-            SELECT
-                w1.item_name,
-                w1.w1_qty,
-                COALESCE(w2.w2_qty, 0) AS w2_qty,
-                w1.w1_qty - COALESCE(w2.w2_qty, 0) AS diff
-            FROM (
-                SELECT item_name, SUM(qty_sold) AS w1_qty
-                FROM daily_sales
-                WHERE date >= ? AND date <= ?
                 GROUP BY item_name
-            ) w1
-            LEFT JOIN (
-                SELECT item_name, SUM(qty_sold) AS w2_qty
-                FROM daily_sales
-                WHERE date >= ? AND date <= ?
-                GROUP BY item_name
-            ) w2 ON w1.item_name = w2.item_name
-            ORDER BY diff DESC
-            LIMIT 1
-        """, (w1_start, w1_end, w2_start, w2_end)).fetchone()
+                ORDER BY active_days DESC, SUM(qty_sold) DESC
+                LIMIT 1
+            """).fetchone()
+            total_days = conn.execute("SELECT COUNT(DISTINCT date) FROM daily_sales").fetchone()[0]
+            if consistent_row and total_days:
+                item_name, active_days = consistent_row[0], int(consistent_row[1])
+                insights.append({
+                    'type': 'star_performer',
+                    'title': '⭐ Most Consistent Menu Item',
+                    'text': f"**{item_name}** is your most reliable dish, appearing in the daily bill logs on **{active_days} out of {total_days} days** of recorded operations.",
+                    'badge': 'Menu Star',
+                    'color': 'success'
+                })
 
-        if trend_rows and trend_rows[3] > 0:
-            item_name, w1_qty, w2_qty, diff = trend_rows[0], int(trend_rows[1]), int(trend_rows[2]), int(trend_rows[3])
-            insights.append({
-                'type': 'trending_up',
-                'title': '📈 Trending Up This Week',
-                'text': f"Demand for **{item_name}** has surged. You sold **{w1_qty} units** this week, up from **{w2_qty} units** last week (a +{diff} plates increase).",
-                'badge': 'Trending Up',
-                'color': 'primary'
-            })
-
-        # 3. Weekend vs Weekday Surge
-        weekend_rows = conn.execute("""
-            SELECT
-                AVG(CASE WHEN strftime('%w', date) IN ('0', '5', '6') THEN daily_rev END) AS weekend_avg,
-                AVG(CASE WHEN strftime('%w', date) NOT IN ('0', '5', '6') THEN daily_rev END) AS weekday_avg
-            FROM (
-                SELECT date, SUM(gross_revenue) AS daily_rev
-                FROM daily_sales
-                GROUP BY date
-            )
-        """).fetchone()
-        if weekend_rows and weekend_rows[0] and weekend_rows[1]:
-            wend, wday = float(weekend_rows[0]), float(weekend_rows[1])
-            ratio = wend / wday
-            insights.append({
-                'type': 'weekend_ratio',
-                'title': '⚖️ Weekend Surge vs Weekdays',
-                'text': f"Weekend daily sales (Fri-Sun) average **₹{wend:,.0f}**, which is **{ratio:.1f}x higher** than your weekday average (₹{wday:,.0f}). Optimize inventory counts for weekend prep.",
-                'badge': 'Sales Balance',
-                'color': 'warning'
-            })
-
-        # 4. Most Consistent Star Performer
-        consistent_row = conn.execute("""
-            SELECT item_name, COUNT(DISTINCT date) AS active_days
-            FROM daily_sales
-            GROUP BY item_name
-            ORDER BY active_days DESC, SUM(qty_sold) DESC
-            LIMIT 1
-        """).fetchone()
-        total_days = conn.execute("SELECT COUNT(DISTINCT date) FROM daily_sales").fetchone()[0]
-        if consistent_row and total_days:
-            item_name, active_days = consistent_row[0], int(consistent_row[1])
-            insights.append({
-                'type': 'star_performer',
-                'title': '⭐ Most Consistent Menu Item',
-                'text': f"**{item_name}** is your most reliable dish, appearing in the daily bill logs on **{active_days} out of {total_days} days** of recorded operations.",
-                'badge': 'Menu Star',
-                'color': 'success'
-            })
-
-        # 5. Slow Categories
-        slow_cat_row = conn.execute("""
-            SELECT mi.category, SUM(ds.gross_revenue) AS cat_rev
-            FROM daily_sales ds
-            LEFT JOIN menu_items mi ON ds.item_name = mi.item_name
-            WHERE ds.date >= ? AND ds.date <= ?
-            GROUP BY mi.category
-            ORDER BY cat_rev ASC
-            LIMIT 1
-        """, (w1_start, w1_end)).fetchone()
-        if slow_cat_row and slow_cat_row[0]:
-            cat_name, cat_rev = slow_cat_row[0], float(slow_cat_row[1])
-            insights.append({
-                'type': 'slow_category',
-                'title': '⚠️ Slowest Category This Week',
-                'text': f"The **{cat_name.replace('_', ' ').capitalize()}** category brought in the lowest weekly revenue (**₹{cat_rev:,.0f}**). Consider a promo or price tweak.",
-                'badge': 'Category Warning',
-                'color': 'danger'
-            })
+            # 5. Slow Categories
+            slow_cat_row = conn.execute("""
+                SELECT mi.category, SUM(ds.gross_revenue) AS cat_rev
+                FROM daily_sales ds
+                LEFT JOIN menu_items mi ON ds.item_name = mi.item_name
+                WHERE ds.date >= ? AND ds.date <= ?
+                GROUP BY mi.category
+                ORDER BY cat_rev ASC
+                LIMIT 1
+            """, (w1_start, w1_end)).fetchone()
+            if slow_cat_row and slow_cat_row[0]:
+                cat_name, cat_rev = slow_cat_row[0], float(slow_cat_row[1])
+                insights.append({
+                    'type': 'slow_category',
+                    'title': '⚠️ Slowest Category This Week',
+                    'text': f"The **{cat_name.replace('_', ' ').capitalize()}** category brought in the lowest weekly revenue (**₹{cat_rev:,.0f}**). Consider a promo or price tweak.",
+                    'badge': 'Category Warning',
+                    'color': 'danger'
+                })
 
         return {'insights': insights}
     except Exception as e:
         return {'insights': [], 'error': str(e)}
-    finally:
-        conn.close()
 
 
 app.include_router(dash_router)
@@ -659,18 +627,17 @@ items_router = APIRouter(prefix='/items', tags=['Items'])
 @items_router.get('/')
 def list_items(category: Optional[str] = Query(default=None)):
     """List all menu items, optionally filtered by category."""
-    conn = _conn()
-    if category:
-        rows = conn.execute(
-            'SELECT item_name, category, avg_qty, unit_price FROM menu_items '
-            'WHERE LOWER(category) = LOWER(?) ORDER BY item_name',
-            (category,)
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            'SELECT item_name, category, avg_qty, unit_price FROM menu_items ORDER BY category, item_name'
-        ).fetchall()
-    conn.close()
+    with get_db_connection() as conn:
+        if category:
+            rows = conn.execute(
+                'SELECT item_name, category, avg_qty, unit_price FROM menu_items '
+                'WHERE LOWER(category) = LOWER(?) ORDER BY item_name',
+                (category,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT item_name, category, avg_qty, unit_price FROM menu_items ORDER BY category, item_name'
+            ).fetchall()
     return {
         'count': len(rows),
         'items': [
@@ -684,12 +651,11 @@ def list_items(category: Optional[str] = Query(default=None)):
 @items_router.get('/categories')
 def list_categories():
     """List all distinct categories."""
-    conn  = _conn()
-    rows  = conn.execute(
-        'SELECT DISTINCT category, COUNT(*) AS item_count '
-        'FROM menu_items GROUP BY category ORDER BY category'
-    ).fetchall()
-    conn.close()
+    with get_db_connection() as conn:
+        rows  = conn.execute(
+            'SELECT DISTINCT category, COUNT(*) AS item_count '
+            'FROM menu_items GROUP BY category ORDER BY category'
+        ).fetchall()
     return {'categories': [{'category': r[0], 'item_count': r[1]} for r in rows]}
 
 
@@ -715,13 +681,11 @@ def update_item_category(item_name: str, body: ItemCategoryUpdate):
     category = body.category.strip().lower().replace(' ', '_')
     if not category:
         raise HTTPException(status_code=400, detail='Category cannot be empty')
-    conn = _conn()
-    result = conn.execute(
-        'UPDATE menu_items SET category = ? WHERE item_name = ?',
-        (category, item_name)
-    )
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        result = conn.execute(
+            'UPDATE menu_items SET category = ? WHERE item_name = ?',
+            (category, item_name)
+        )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=f'Item "{item_name}" not found')
     return {'ok': True, 'item_name': item_name, 'new_category': category}
@@ -733,13 +697,11 @@ def update_item_price(item_name: str, body: ItemPriceUpdate):
     price = body.unit_price
     if price < 0:
         raise HTTPException(status_code=400, detail='Price cannot be negative')
-    conn = _conn()
-    result = conn.execute(
-        'UPDATE menu_items SET unit_price = ? WHERE item_name = ?',
-        (price, item_name)
-    )
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        result = conn.execute(
+            'UPDATE menu_items SET unit_price = ? WHERE item_name = ?',
+            (price, item_name)
+        )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=f'Item "{item_name}" not found')
     return {'ok': True, 'item_name': item_name, 'unit_price': price}
@@ -752,13 +714,11 @@ def rename_category(body: RenameCategoryBody):
     new = body.new_category.strip().lower().replace(' ', '_')
     if not old or not new:
         raise HTTPException(status_code=400, detail='Category names cannot be empty')
-    conn = _conn()
-    result = conn.execute(
-        'UPDATE menu_items SET category = ? WHERE LOWER(category) = ?',
-        (new, old)
-    )
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        result = conn.execute(
+            'UPDATE menu_items SET category = ? WHERE LOWER(category) = ?',
+            (new, old)
+        )
     return {'ok': True, 'old_category': old, 'new_category': new, 'items_updated': result.rowcount}
 
 
@@ -769,17 +729,14 @@ def add_menu_item(body: NewItemBody):
     category = body.category.strip().lower().replace(' ', '_')
     if not name or not category:
         raise HTTPException(status_code=400, detail='item_name and category are required')
-    conn = _conn()
     try:
-        conn.execute(
-            'INSERT INTO menu_items (item_name, category, avg_qty, unit_price) VALUES (?, ?, ?, ?)',
-            (name, category, body.avg_qty or 0.0, body.unit_price or 0.0)
-        )
-        conn.commit()
+        with get_db_connection() as conn:
+            conn.execute(
+                'INSERT INTO menu_items (item_name, category, avg_qty, unit_price) VALUES (?, ?, ?, ?)',
+                (name, category, body.avg_qty or 0.0, body.unit_price or 0.0)
+            )
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=409, detail=f'Item already exists or error: {e}')
-    conn.close()
     return {'ok': True, 'item_name': name, 'category': category, 'unit_price': body.unit_price or 0.0}
 
 
@@ -787,13 +744,11 @@ def add_menu_item(body: NewItemBody):
 @items_router.delete('/{item_name}')
 def delete_menu_item(item_name: str):
     """Delete a menu item."""
-    conn = _conn()
-    result = conn.execute(
-        'DELETE FROM menu_items WHERE item_name = ?',
-        (item_name,)
-    )
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        result = conn.execute(
+            'DELETE FROM menu_items WHERE item_name = ?',
+            (item_name,)
+        )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=f'Item "{item_name}" not found')
     return {'ok': True, 'item_name': item_name}
@@ -821,26 +776,28 @@ class SaleEntry(BaseModel):
 def get_sales(date_filter: Optional[str] = Query(default=None, alias='date'),
               limit: int = Query(default=100, ge=1, le=1000)):
     """Get sales records, optionally filtered by date."""
-    conn = _conn()
-    if date_filter:
-        rows = conn.execute(
-            'SELECT date, item_name, qty_sold, gross_revenue, source '
-            'FROM daily_sales WHERE date = ? ORDER BY item_name LIMIT ?',
-            (date_filter, limit)
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            'SELECT date, item_name, qty_sold, gross_revenue, source '
-            'FROM daily_sales ORDER BY date DESC, item_name LIMIT ?',
-            (limit,)
-        ).fetchall()
-    conn.close()
+    with get_db_connection() as conn:
+        if date_filter:
+            rows = conn.execute(
+                'SELECT date, item_name, qty_sold, gross_revenue, source '
+                'FROM daily_sales WHERE date = ? ORDER BY item_name LIMIT ?',
+                (date_filter, limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT date, item_name, qty_sold, gross_revenue, source '
+                'FROM daily_sales ORDER BY date DESC, item_name LIMIT ?',
+                (limit,)
+            ).fetchall()
     return {
         'count': len(rows),
         'sales': [
             {
-                'date': r[0], 'item_name': r[1],
-                'qty_sold': r[2], 'gross_revenue': r[3], 'source': r[4],
+                'date': r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0]),
+                'item_name': r[1],
+                'qty_sold': r[2],
+                'gross_revenue': float(r[3]),
+                'source': r[4],
             }
             for r in rows
         ],
@@ -856,38 +813,36 @@ def log_sales(entries: List[SaleEntry]):
     will UPDATE the existing row if it already exists, so clicking
     'Save' multiple times never duplicates data.
     """
-    conn   = _conn()
     saved  = 0
     errors = []
 
-    # Fetch configured unit prices from menu_items catalog
-    price_rows = conn.execute(
-        'SELECT item_name, unit_price FROM menu_items'
-    ).fetchall()
-    price_map  = {r[0]: float(r[1]) for r in price_rows if r[1] is not None}
+    with get_db_connection() as conn:
+        # Fetch configured unit prices from menu_items catalog
+        price_rows = conn.execute(
+            'SELECT item_name, unit_price FROM menu_items'
+        ).fetchall()
+        price_map  = {r[0]: float(r[1]) for r in price_rows if r[1] is not None}
 
-    for entry in entries:
-        # Use provided revenue; if missing/zero, estimate from unit price
-        if entry.gross_revenue is not None and entry.gross_revenue > 0:
-            revenue = entry.gross_revenue
-        else:
-            unit_price = price_map.get(entry.item_name, 0.0)
-            revenue = round(entry.qty_sold * unit_price, 2)
+        for entry in entries:
+            # Use provided revenue; if missing/zero, estimate from unit price
+            if entry.gross_revenue is not None and entry.gross_revenue > 0:
+                revenue = entry.gross_revenue
+            else:
+                unit_price = price_map.get(entry.item_name, 0.0)
+                revenue = round(entry.qty_sold * unit_price, 2)
 
-        try:
-            conn.execute(
-                'INSERT OR REPLACE INTO daily_sales '
-                '(date, item_name, qty_sold, gross_revenue, source) '
-                'VALUES (?, ?, ?, ?, ?)',
-                (entry.date, entry.item_name, entry.qty_sold,
-                 revenue, entry.source or 'manual')
-            )
-            saved += 1
-        except Exception as e:
-            errors.append({'item': entry.item_name, 'error': str(e)})
+            try:
+                conn.execute(
+                    'INSERT OR REPLACE INTO daily_sales '
+                    '(date, item_name, qty_sold, gross_revenue, source) '
+                    'VALUES (?, ?, ?, ?, ?)',
+                    (entry.date, entry.item_name, entry.qty_sold,
+                     revenue, entry.source or 'manual')
+                )
+                saved += 1
+            except Exception as e:
+                errors.append({'item': entry.item_name, 'error': str(e)})
 
-    conn.commit()
-    conn.close()
     return {'saved': saved, 'errors': errors}
 
 
@@ -899,29 +854,35 @@ def item_trend(
     end_date: Optional[str] = Query(default=None),
 ):
     """Daily qty_sold trend for a specific item over a range or last N days."""
-    conn   = _conn()
     if start_date and end_date:
-        rows = conn.execute(
-            'SELECT date, SUM(qty_sold) AS qty '
-            'FROM daily_sales WHERE item_name = ? AND date >= ? AND date <= ? '
-            'GROUP BY date ORDER BY date ASC',
-            (item, start_date, end_date)
-        ).fetchall()
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                'SELECT date, SUM(qty_sold) AS qty '
+                'FROM daily_sales WHERE item_name = ? AND date >= ? AND date <= ? '
+                'GROUP BY date ORDER BY date ASC',
+                (item, start_date, end_date)
+            ).fetchall()
     else:
         d = days or 30
         cutoff = (get_today() - timedelta(days=d)).isoformat()
-        rows = conn.execute(
-            'SELECT date, SUM(qty_sold) AS qty '
-            'FROM daily_sales WHERE item_name = ? AND date >= ? '
-            'GROUP BY date ORDER BY date ASC',
-            (item, cutoff)
-        ).fetchall()
-    conn.close()
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                'SELECT date, SUM(qty_sold) AS qty '
+                'FROM daily_sales WHERE item_name = ? AND date >= ? '
+                'GROUP BY date ORDER BY date ASC',
+                (item, cutoff)
+            ).fetchall()
     return {
         'item': item,
         'start_date': start_date,
         'end_date': end_date,
-        'series': [{'date': r[0], 'qty': int(r[1])} for r in rows],
+        'series': [
+            {
+                'date': r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0]),
+                'qty': int(r[1])
+            }
+            for r in rows
+        ],
     }
 
 
@@ -951,10 +912,10 @@ async def upload_pdf(file: UploadFile = File(...)):
             gemini_key = os.environ.get('GEMINI_API_KEY', '').strip() or _RUNTIME_KEYS.get('gemini_api_key', '')
 
             # ── Known items from DB ────────────────────────────────────────────
-            conn2       = _conn()
-            known_items = set(
-                r[0] for r in conn2.execute('SELECT item_name FROM menu_items').fetchall()
-            )
+            with get_db_connection() as conn2:
+                known_items = set(
+                    r[0] for r in conn2.execute('SELECT item_name FROM menu_items').fetchall()
+                )
             
             # ── Parse date from filename ───────────────────────────────────────
             date_match = re.search(r'(\d{2})-(\d{2})-(\d{4})', filename)
@@ -1178,11 +1139,10 @@ def save_override(entry: OverrideEntry):
     Save merchant's manual quantity override for a recommendation.
     Updates the recommendations table's merchant_override column.
     """
-    conn = _conn()
-    try:
+    with get_db_connection() as conn:
         # Check if recommendation row exists
         existing = conn.execute(
-            'SELECT rowid FROM recommendations WHERE date = ? AND item_name = ?',
+            'SELECT id FROM recommendations WHERE date = ? AND item_name = ?',
             (entry.date, entry.item_name)
         ).fetchone()
 
@@ -1198,9 +1158,6 @@ def save_override(entry: OverrideEntry):
                 'VALUES (?, ?, ?, ?)',
                 (entry.date, entry.item_name, entry.merchant_qty, entry.reason)
             )
-        conn.commit()
-    finally:
-        conn.close()
 
     return {'status': 'saved', 'date': entry.date, 'item_name': entry.item_name}
 
@@ -1211,29 +1168,27 @@ def recommendation_accuracy(days: int = Query(default=14, ge=1, le=90)):
     Back-test: compare past recommendations vs actual sales.
     Returns per-item MAE, daily MAE trend, and overall accuracy percentage.
     """
-    conn   = _conn()
     cutoff = (get_today() - timedelta(days=days)).isoformat()
-
-    rows = conn.execute(
-        """
-        SELECT
-            r.date,
-            r.item_name,
-            r.recommended_qty,
-            COALESCE(r.merchant_override, r.recommended_qty) AS final_qty,
-            COALESCE(s.actual_qty, 0) AS actual_qty
-        FROM recommendations r
-        LEFT JOIN (
-            SELECT date, item_name, SUM(qty_sold) AS actual_qty
-            FROM daily_sales
-            GROUP BY date, item_name
-        ) s ON r.date = s.date AND r.item_name = s.item_name
-        WHERE r.date >= ? AND r.recommended_qty IS NOT NULL
-        ORDER BY r.date DESC, r.item_name
-        """,
-        (cutoff,)
-    ).fetchall()
-    conn.close()
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                r.date,
+                r.item_name,
+                r.recommended_qty,
+                COALESCE(r.merchant_override, r.recommended_qty) AS final_qty,
+                COALESCE(s.actual_qty, 0) AS actual_qty
+            FROM recommendations r
+            LEFT JOIN (
+                SELECT date, item_name, SUM(qty_sold) AS actual_qty
+                FROM daily_sales
+                GROUP BY date, item_name
+            ) s ON r.date = s.date AND r.item_name = s.item_name
+            WHERE r.date >= ? AND r.recommended_qty IS NOT NULL
+            ORDER BY r.date DESC, r.item_name
+            """,
+            (cutoff,)
+        ).fetchall()
 
     if not rows:
         return {
@@ -1268,7 +1223,7 @@ def recommendation_accuracy(days: int = Query(default=14, ge=1, le=90)):
         item_stats[name]['total_error'] += error
         item_stats[name]['count']       += 1
 
-        dt = r[0]
+        dt = r[0].isoformat() if hasattr(r[0], 'isoformat') else str(r[0])
         if dt not in daily_stats:
             daily_stats[dt] = {'total_error': 0.0, 'count': 0}
         daily_stats[dt]['total_error'] += error
@@ -1334,16 +1289,17 @@ class SettingsUpdate(BaseModel):
 def get_settings():
     """Return current settings and DB stats."""
     cfg  = _load_config()
-    conn = _conn()
     try:
-        rows  = conn.execute('SELECT COUNT(*) FROM daily_sales').fetchone()[0]
-        items = conn.execute('SELECT COUNT(*) FROM menu_items').fetchone()[0]
-        dates = conn.execute('SELECT MIN(date), MAX(date) FROM daily_sales').fetchone()
-        date_range = f'{dates[0]} to {dates[1]}' if dates and dates[0] else 'N/A'
+        with get_db_connection() as conn:
+            rows  = conn.execute('SELECT COUNT(*) FROM daily_sales').fetchone()[0]
+            items = conn.execute('SELECT COUNT(*) FROM menu_items').fetchone()[0]
+            dates = conn.execute('SELECT MIN(date), MAX(date) FROM daily_sales').fetchone()
+            
+            d_min = dates[0].isoformat() if hasattr(dates[0], 'isoformat') else str(dates[0]) if dates and dates[0] else None
+            d_max = dates[1].isoformat() if hasattr(dates[1], 'isoformat') else str(dates[1]) if dates and dates[1] else None
+            date_range = f'{d_min} to {d_max}' if d_min and d_max else 'N/A'
     except Exception:
         rows, items, date_range = 0, 0, 'N/A'
-    finally:
-        conn.close()
 
     mi = get_model_info()
 
