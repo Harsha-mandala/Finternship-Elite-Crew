@@ -11,7 +11,9 @@ Each returned item dict has:
     item_name, category, recommended_qty, reason, base_avg, model_used
 """
 
+import os
 import sys
+import sqlite3
 _HERE   = os.path.dirname(os.path.abspath(__file__))
 _BACKEND = os.path.dirname(_HERE)
 if _BACKEND not in sys.path:

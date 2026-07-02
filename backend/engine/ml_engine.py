@@ -18,6 +18,10 @@ Prediction flow:
   5. Generate human-readable reasons
 """
 
+import os
+import json
+import sqlite3
+import joblib
 import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _BACKEND = os.path.dirname(_HERE)

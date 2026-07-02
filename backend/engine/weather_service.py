@@ -9,6 +9,11 @@ Slot filtering: only hours 09, 12, 15, 18, 21 (restaurant working hours).
 feels_like: taken from the slot closest to 15:00.
 """
 
+import os
+import json
+import sqlite3
+import random
+import requests
 import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _BACKEND = os.path.dirname(_HERE)
