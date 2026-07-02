@@ -423,15 +423,20 @@ def predict_for_date(target_date: str, conn: Optional[object] = None) -> List[di
                     raw_qty = max(0.0, raw_qty)
 
                     # 14-day base avg for context
-                    avg_row = conn.execute(
-                        'SELECT AVG(qty_sold) FROM ('
-                        '  SELECT qty_sold FROM daily_sales '
-                        '  WHERE item_name = ? AND date < ? '
-                        '  ORDER BY date DESC LIMIT 14'
-                        ')',
-                        (item_name, target_date)
-                    ).fetchone()
-                    base_avg = float(avg_row[0]) if avg_row and avg_row[0] else raw_qty
+                    if hasattr(fb, '_history_cache') and item_name in fb._history_cache:
+                        history = fb._history_cache[item_name]
+                        vals14 = [qty for d, qty in history if d < target_date][::-1][:14]
+                        base_avg = float(np.mean(vals14)) if vals14 else raw_qty
+                    else:
+                        avg_row = conn.execute(
+                            'SELECT AVG(qty_sold) FROM ('
+                            '  SELECT qty_sold FROM daily_sales '
+                            '  WHERE item_name = ? AND date < ? '
+                            '  ORDER BY date DESC LIMIT 14'
+                            ')',
+                            (item_name, target_date)
+                        ).fetchone()
+                        base_avg = float(avg_row[0]) if avg_row and avg_row[0] else raw_qty
 
                     # +10% safety buffer
                     buffered = raw_qty * 1.10

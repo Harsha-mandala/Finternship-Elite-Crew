@@ -164,6 +164,48 @@ class FeatureBuilder:
         def _date_str(delta_days: int) -> str:
             return (before_dt - timedelta(days=delta_days)).strftime('%Y-%m-%d')
 
+        history_cache = getattr(self, '_history_cache', None)
+        sales_map_cache = getattr(self, '_sales_map_cache', None)
+
+        if history_cache is not None and sales_map_cache is not None:
+            # 1. lag_1
+            lag_1_val = sales_map_cache.get((item_name, _date_str(1)))
+            lag_1 = lag_1_val if lag_1_val is not None else 0.0
+
+            # 2. lag_7
+            lag_7_val = sales_map_cache.get((item_name, _date_str(7)))
+            lag_7 = lag_7_val if lag_7_val is not None else 0.0
+
+            # 3. rolling averages
+            history = history_cache.get(item_name, [])
+            vals_desc = [qty for d, qty in history if d < before_date][::-1]
+
+            vals14 = vals_desc[:14]
+            rolling_14_mean   = float(np.mean(vals14))   if vals14 else 0.0
+            rolling_7_median  = float(np.median(vals14[:7])) if vals14 else 0.0
+
+            # 4. trend slope
+            vals5 = vals_desc[:5]
+            if len(vals5) >= 4:
+                recent_avg = float(np.mean(vals5[:2]))     # last 2
+                older_avg  = float(np.mean(vals5[2:5]))    # days 3-5
+                if older_avg > 0:
+                    slope = (recent_avg / older_avg) - 1.0
+                else:
+                    slope = 0.0
+                trend_slope = float(np.clip(slope, -0.3, 0.3))
+            else:
+                trend_slope = 0.0
+
+            return {
+                'lag_1':            lag_1,
+                'lag_7':            lag_7,
+                'rolling_7_median': rolling_7_median,
+                'rolling_14_mean':  rolling_14_mean,
+                'trend_slope':      trend_slope,
+            }
+
+        # Fallback to slow sequential database queries
         def _qty_on(date_s: str) -> Optional[float]:
             row = conn.execute(
                 'SELECT SUM(qty_sold) FROM daily_sales '
@@ -194,7 +236,6 @@ class FeatureBuilder:
         rolling_7_median  = float(np.median(vals14[:7])) if vals14 else 0.0
 
         # trend_slope: (avg of last 2 days) / (avg of days 3-5) - 1.0
-        # Uses the actual date-ordered values from the DB
         rows5 = conn.execute(
             'SELECT qty_sold FROM daily_sales '
             'WHERE item_name = ? AND date < ? '
@@ -294,6 +335,22 @@ class FeatureBuilder:
 
         all_dates = sorted(set(r[0] for r in sales_rows))
 
+        # Pre-fetch all sales history to avoid N+1 query latency on remote DB during training
+        item_history = {}
+        sales_map = {}
+        history_rows = conn.execute(
+            'SELECT item_name, date, SUM(qty_sold) FROM daily_sales GROUP BY item_name, date ORDER BY date ASC'
+        ).fetchall()
+        for r in history_rows:
+            i_name, d_str, qty = r[0], r[1], float(r[2]) if r[2] is not None else 0.0
+            if i_name not in item_history:
+                item_history[i_name] = []
+            item_history[i_name].append((d_str, qty))
+            sales_map[(i_name, d_str)] = qty
+
+        self._history_cache = item_history
+        self._sales_map_cache = sales_map
+
         # Pre-fetch all weather into a dict
         weather_map: dict = {}
         for r in conn.execute('SELECT * FROM weather_data').fetchall():
@@ -355,6 +412,22 @@ class FeatureBuilder:
         cat_map: dict = {}
         for r in conn.execute('SELECT item_name, category FROM menu_items').fetchall():
             cat_map[r[0]] = r[1] or 'other'
+
+        # Pre-fetch all sales history to avoid N+1 query latency on remote DB
+        item_history = {}
+        sales_map = {}
+        history_rows = conn.execute(
+            'SELECT item_name, date, SUM(qty_sold) FROM daily_sales GROUP BY item_name, date ORDER BY date ASC'
+        ).fetchall()
+        for r in history_rows:
+            i_name, d_str, qty = r[0], r[1], float(r[2]) if r[2] is not None else 0.0
+            if i_name not in item_history:
+                item_history[i_name] = []
+            item_history[i_name].append((d_str, qty))
+            sales_map[(i_name, d_str)] = qty
+
+        self._history_cache = item_history
+        self._sales_map_cache = sales_map
 
         records = []
         item_names = []
