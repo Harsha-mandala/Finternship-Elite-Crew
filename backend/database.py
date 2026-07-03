@@ -18,9 +18,6 @@ if IS_POSTGRES:
     if DATABASE_URL.startswith('postgres://'):
         DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
 import threading
-
-# Limit concurrent PostgreSQL connections to 8 (leaving plenty of headroom below Supabase's 15 limit)
-DB_SEMAPHORE = threading.BoundedSemaphore(8)
 def translate_sql(sql: str, is_postgres: bool) -> str:
     """
     Translate SQLite specific syntax to PostgreSQL compatibility.
@@ -125,14 +122,7 @@ class WrappedConnection:
     def close(self):
         if not self.closed:
             self.closed = True
-            try:
-                self.conn.close()
-            finally:
-                if self.is_postgres:
-                    try:
-                        DB_SEMAPHORE.release()
-                    except ValueError:
-                        pass
+            self.conn.close()
 
     def __enter__(self):
         return self
@@ -149,13 +139,8 @@ def get_db_connection() -> WrappedConnection:
     Returns a unified database connection wrapper (PostgreSQL or SQLite fallback).
     """
     if IS_POSTGRES:
-        DB_SEMAPHORE.acquire()
-        try:
-            conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
-            return WrappedConnection(conn, True)
-        except Exception as e:
-            DB_SEMAPHORE.release()
-            raise e
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        return WrappedConnection(conn, True)
     else:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
