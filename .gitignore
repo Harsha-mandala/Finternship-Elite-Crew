@@ -47,6 +47,7 @@ backend/config.json
 
 # Merchant data — NEVER commit raw PDF bills (private sales data)
 data/*.pdf
+*.pdf
 
 # Merchant data — NEVER commit extracted sales CSVs or any data exports
 data_pipeline/uploaded_sales_data.csv

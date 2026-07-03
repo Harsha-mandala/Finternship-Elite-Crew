@@ -1038,21 +1038,21 @@ async def upload_pdf(file: UploadFile = File(...)):
             yield event('saving', f'\U0001f4be Saving {len(rows_to_insert)} records...', 90)
 
             saved = 0
-            for row in rows_to_insert:
-                sale_date_r, item_name, qty = row[0], row[1], row[2]
-                rev = float(row[3]) if len(row) > 3 else 0.0
-                try:
-                    conn2.execute(
-                        'INSERT OR REPLACE INTO daily_sales '
-                        '(date, item_name, qty_sold, gross_revenue, source) '
-                        'VALUES (?, ?, ?, ?, ?)',
-                        (sale_date_r, item_name, qty, rev, 'pdf_upload')
-                    )
-                    saved += 1
-                except Exception:
-                    pass
-            conn2.commit()
-            conn2.close()
+            if rows_to_insert:
+                with get_db_connection() as conn:
+                    for row in rows_to_insert:
+                        sale_date_r, item_name, qty = row[0], row[1], row[2]
+                        rev = float(row[3]) if len(row) > 3 else 0.0
+                        try:
+                            conn.execute(
+                                'INSERT OR REPLACE INTO daily_sales '
+                                '(date, item_name, qty_sold, gross_revenue, source) '
+                                'VALUES (?, ?, ?, ?, ?)',
+                                (sale_date_r, item_name, qty, rev, 'pdf_upload')
+                            )
+                            saved += 1
+                        except Exception as insert_err:
+                            print(f'[main] PDF upload insert error: {insert_err}')
 
             yield event(
                 'done',
