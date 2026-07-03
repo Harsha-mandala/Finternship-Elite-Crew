@@ -326,7 +326,7 @@ class FeatureBuilder:
                 COALESCE(mi.category, 'other') AS category
             FROM daily_sales ds
             LEFT JOIN menu_items mi ON ds.item_name = mi.item_name
-            GROUP BY ds.date, ds.item_name
+            GROUP BY ds.date, ds.item_name, mi.category
             ORDER BY ds.date ASC
         """).fetchall()
 
