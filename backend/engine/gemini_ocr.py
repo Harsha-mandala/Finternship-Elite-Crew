@@ -236,6 +236,19 @@ Example output:
         "generationConfig": {
             "temperature": 0.05,
             "maxOutputTokens": 8192,
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "item_name": {"type": "STRING"},
+                        "qty": {"type": "INTEGER"},
+                        "gross": {"type": "NUMBER"}
+                    },
+                    "required": ["item_name", "qty", "gross"]
+                }
+            }
         }
     }
 
