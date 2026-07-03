@@ -86,23 +86,65 @@ function initHeader() {
 }
 
 // ── API Status Dot ─────────────────────────────────────────────────────────────
+// Render free-tier cold-starts can take 30-50s. Strategy:
+//   • First attempt: 35s timeout — if OK → green, if timeout → show yellow "waking"
+//   • Auto-retry after 30s (one more chance before going red)
+let _apiWaking = false;
+let _wakeRetryTimer = null;
+
+async function _pingHealth(timeoutMs) {
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${BASE_URL}/health`, { signal: controller.signal });
+    clearTimeout(tid);
+    return res.ok;
+  } catch {
+    clearTimeout(tid);
+    return false;
+  }
+}
+
 async function checkApiStatus() {
   const dot = document.getElementById('api-dot');
   if (!dot) return;
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(`${BASE_URL}/health`, { signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (res.ok) {
-      dot.classList.add('online');
-      dot.classList.remove('offline');
-      dot.title = 'API Online ✓';
-    } else throw new Error();
-  } catch {
+
+  // Quick 5s check first — if already awake, respond instantly
+  const quick = await _pingHealth(5000);
+  if (quick) {
+    dot.style.background = '';
+    dot.classList.add('online');
+    dot.classList.remove('offline');
+    dot.title = 'API Online ✓';
+    _apiWaking = false;
+    clearTimeout(_wakeRetryTimer);
+    return;
+  }
+
+  // Server didn't respond in 5s — could be cold-starting. Show yellow.
+  dot.classList.remove('online', 'offline');
+  dot.style.background = '#f59e0b';
+  dot.style.boxShadow = '0 0 6px #f59e0b';
+  dot.title = 'API waking up (Render cold start)…';
+  _apiWaking = true;
+
+  // Wait up to 40s for cold start to complete
+  const waking = await _pingHealth(40000);
+  if (waking) {
+    dot.style.background = '';
+    dot.style.boxShadow = '';
+    dot.classList.add('online');
+    dot.classList.remove('offline');
+    dot.title = 'API Online ✓';
+    _apiWaking = false;
+  } else {
+    // Genuinely offline
+    dot.style.background = '';
+    dot.style.boxShadow = '';
     dot.classList.add('offline');
     dot.classList.remove('online');
-    dot.title = 'API Offline — using mock data';
+    dot.title = 'API Offline — backend may be down';
+    _apiWaking = false;
   }
 }
 
