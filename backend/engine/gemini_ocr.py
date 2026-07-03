@@ -62,7 +62,7 @@ MODELS = [
 RATE_LIMIT_WAIT_SECONDS  = 65   # wait when quota (429) hit; then try next model
 SERVER_BUSY_WAIT_SECONDS = 15   # wait when server overloaded (503); retry same model
 MAX_RETRIES              = 5    # max retries per model before moving on
-MAX_PAGES_PER_BATCH      = 25   # split PDFs larger than this into chunks
+MAX_PAGES_PER_BATCH      = 2    # split PDFs larger than this into chunks to prevent output truncation
 
 # Global state — persists across calls within the same process lifetime
 APP_STATE = {
