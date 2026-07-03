@@ -1457,33 +1457,6 @@ def retrain_model(source: Optional[str] = None):
     }
 
 
-@settings_router.post('/retrain-sync')
-def retrain_model_sync():
-    """Trigger a synchronous model retrain (useful for debugging)."""
-    if not ML_AVAILABLE:
-        raise HTTPException(status_code=400, detail='ML engine not available')
-    try:
-        info = _ml_train()
-        cfg = _load_config()
-        cfg['last_retrain_time'] = datetime.now().isoformat()
-        cfg['last_retrain_status'] = 'success'
-        cfg['last_retrain_error'] = None
-        _save_config(cfg)
-        return {'status': 'success', 'info': info}
-    except Exception as e:
-        import traceback
-        err_msg = traceback.format_exc()
-        try:
-            cfg = _load_config()
-            cfg['last_retrain_time'] = datetime.now().isoformat()
-            cfg['last_retrain_status'] = 'failed'
-            cfg['last_retrain_error'] = err_msg
-            _save_config(cfg)
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f'Training failed: {err_msg}')
-
-
 app.include_router(settings_router)
 
 
