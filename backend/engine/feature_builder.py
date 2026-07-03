@@ -425,11 +425,12 @@ class FeatureBuilder:
         # Pre-fetch all sales history to avoid N+1 query latency on remote DB
         item_history = {}
         sales_map = {}
-        history_rows = conn.execute(
+        raw_history = conn.execute(
             'SELECT item_name, date, SUM(qty_sold) FROM daily_sales GROUP BY item_name, date ORDER BY date ASC'
         ).fetchall()
+        history_rows = [(r[0], _norm_date(r[1]), float(r[2]) if r[2] is not None else 0.0) for r in raw_history]
         for r in history_rows:
-            i_name, d_str, qty = r[0], r[1], float(r[2]) if r[2] is not None else 0.0
+            i_name, d_str, qty = r[0], r[1], r[2]
             if i_name not in item_history:
                 item_history[i_name] = []
             item_history[i_name].append((d_str, qty))

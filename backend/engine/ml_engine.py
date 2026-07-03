@@ -429,7 +429,7 @@ def predict_for_date(target_date: str, conn: Optional[object] = None) -> List[di
                     # 14-day base avg for context
                     if hasattr(fb, '_history_cache') and item_name in fb._history_cache:
                         history = fb._history_cache[item_name]
-                        vals14 = [qty for d, qty in history if d < target_date][::-1][:14]
+                        vals14 = [qty for d, qty in history if (d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d)) < target_date][::-1][:14]
                         base_avg = float(np.mean(vals14)) if vals14 else raw_qty
                     else:
                         avg_row = conn.execute(
