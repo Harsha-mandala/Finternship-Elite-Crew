@@ -143,11 +143,14 @@ def train_model() -> dict:
     X_train, X_val = X[:split_idx], X[split_idx:]
     y_train, y_val = y[:split_idx], y[split_idx:]
 
+    import gc
+    gc.collect()
+
     params = dict(
-        n_estimators=200,
+        n_estimators=80,       # reduced from 200 to prevent OOM
         learning_rate=0.08,
-        max_depth=5,
-        num_leaves=25,
+        max_depth=3,           # reduced from 5 to prevent OOM
+        num_leaves=8,          # reduced from 25 to prevent OOM
         min_child_samples=3,
         subsample=0.8,
         colsample_bytree=0.8,
@@ -155,6 +158,7 @@ def train_model() -> dict:
         reg_alpha=0.1,
         reg_lambda=0.1,
         random_state=42,
+        n_jobs=1,              # limit to single thread to save memory
         verbose=-1,
     )
 
@@ -162,7 +166,7 @@ def train_model() -> dict:
     model.fit(
         X_train, y_train,
         eval_set=[(X_val, y_val)],
-        callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(period=-1)],
+        callbacks=[lgb.early_stopping(15, verbose=False), lgb.log_evaluation(period=-1)],
     )
 
     # Validation MAE
