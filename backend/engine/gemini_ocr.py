@@ -37,34 +37,12 @@ import urllib.error
 
 # ── Model fallback chain (best to acceptable) ──────────────────────────────────
 MODELS = [
-    # Gemini 3.5 Generation (Latest, highly optimized for coding/agentic tasks)
-    "gemini-3.5-pro",
-    "gemini-3.5-flash",
-
-    # Gemini 3.1 Generation (High volume, cost efficient)
-    "gemini-3.1-pro",
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-flash",
-    "gemini-3.1-flash-lite",
-
-    # Gemini 3.0 Family
-    "gemini-3.0-pro",
-    "gemini-3.0-flash",
-    "gemini-3-pro-preview",
-    "gemini-3-flash-preview",
-
-    # Gemini 2.5 Family
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-
-    # Gemini 2.0 Family
-    "gemini-2.0-pro-exp-02-05",
+    # Gemini 2.0 Family (Fast, active, default)
     "gemini-2.0-flash",
 
-    # Gemini 1.5 Family (Standard production fallbacks)
-    "gemini-1.5-pro",
+    # Gemini 1.5 Family (Robust production fallback)
     "gemini-1.5-flash",
+    "gemini-1.5-pro",
 ]
 
 RATE_LIMIT_WAIT_SECONDS  = 65   # wait when quota (429) hit; then try next model
@@ -339,7 +317,7 @@ def process_pdf_with_gemini(file_bytes: bytes, api_key: str, known_items: list, 
 def reset_model_index():
     """Reset to the best (first) model. Call after a long idle period."""
     APP_STATE["model_idx"] = 0
-    print("[gemini_ocr] Model index reset to 0 (gemini-3.5-pro)")
+    print("[gemini_ocr] Model index reset to 0 (gemini-2.0-flash)")
 
 
 def get_current_model() -> str:
