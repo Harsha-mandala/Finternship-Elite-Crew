@@ -192,7 +192,7 @@ def _conn():
 # ── Engine imports ─────────────────────────────────────────────────────────────
 
 try:
-    from engine.recommender import generate_recommendations, get_recommendation_context
+    from engine.recommender import generate_recommendations, get_recommendation_context, save_recommendations
     RECS_AVAILABLE = True
 except Exception as _recs_err:
     RECS_AVAILABLE = False
@@ -1110,6 +1110,11 @@ def get_recommendations(date_param: Optional[str] = Query(default=None, alias='d
     if RECS_AVAILABLE:
         try:
             recs = generate_recommendations(date_param)
+            # Save to DB so accuracy back-test can compare vs actual sales
+            try:
+                save_recommendations(date_param, recs)
+            except Exception as _save_err:
+                print(f'[main] Could not save recommendations: {_save_err}')
             return {'date': date_param, 'recommendations': recs, 'count': len(recs)}
         except Exception as e:
             print(f'[main] Recommendation error: {e}')
