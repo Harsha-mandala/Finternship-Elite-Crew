@@ -96,7 +96,8 @@ async function _pingHealth(timeoutMs) {
   const controller = new AbortController();
   const tid = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${BASE_URL}/health`, { signal: controller.signal });
+    // Use /ping (lightweight, no DB query) to check if server is alive
+    const res = await fetch(`${BASE_URL}/ping`, { signal: controller.signal });
     clearTimeout(tid);
     return res.ok;
   } catch {
@@ -190,7 +191,7 @@ function initApp() {
   // Render spins down after 15 min of inactivity. A silent ping keeps it awake
   // while any browser tab has the app open.
   setInterval(() => {
-    fetch(`${BASE_URL}/health`, { method: 'GET', cache: 'no-store' }).catch(() => {});
+    fetch(`${BASE_URL}/ping`, { method: 'GET', cache: 'no-store' }).catch(() => {});
   }, 10 * 60 * 1000);  // 10 minutes
 
   document.querySelectorAll('.nav-btn').forEach(btn => {
