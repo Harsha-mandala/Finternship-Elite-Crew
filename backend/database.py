@@ -151,7 +151,7 @@ def get_db_connection() -> WrappedConnection:
     if IS_POSTGRES:
         DB_SEMAPHORE.acquire()
         try:
-            conn = psycopg2.connect(DATABASE_URL)
+            conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
             return WrappedConnection(conn, True)
         except Exception as e:
             DB_SEMAPHORE.release()

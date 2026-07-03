@@ -136,8 +136,16 @@ if not IS_POSTGRES:
                 print(f'[startup] DB merge failed ({_merge_err})')
     _ensure_unit_price_column(DB_PATH)
 
-initialize_database()
 
+# Run DB init in a background thread so the server can accept /ping immediately.
+# If Supabase is slow to connect, this prevents a startup hang that blocks uvicorn.
+def _bg_init():
+    try:
+        initialize_database()
+    except Exception as _init_err:
+        print(f'[startup] initialize_database failed: {_init_err}')
+
+threading.Thread(target=_bg_init, daemon=True).start()
 
 
 
