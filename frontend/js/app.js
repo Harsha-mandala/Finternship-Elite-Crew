@@ -184,7 +184,14 @@ if (typeof Chart !== 'undefined') {
 function initApp() {
   initHeader();
   checkApiStatus();
-  setInterval(checkApiStatus, 60000);
+  setInterval(checkApiStatus, 90000);   // Re-check every 90s
+
+  // ── Keepalive: ping every 10 min to prevent Render free-tier from sleeping ──
+  // Render spins down after 15 min of inactivity. A silent ping keeps it awake
+  // while any browser tab has the app open.
+  setInterval(() => {
+    fetch(`${BASE_URL}/health`, { method: 'GET', cache: 'no-store' }).catch(() => {});
+  }, 10 * 60 * 1000);  // 10 minutes
 
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => navigateTo(btn.dataset.screen));
