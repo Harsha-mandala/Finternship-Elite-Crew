@@ -909,7 +909,7 @@ async def upload_pdf(file: UploadFile = File(...)):
             import asyncio
             
             # Read Gemini key: env var first (persistent), then runtime store (session-only)
-            gemini_key = os.environ.get('GEMINI_API_KEY', '').strip() or _RUNTIME_KEYS.get('gemini_api_key', '')
+            gemini_key = (os.getenv("GEMINI_API_KEY") or os.environ.get('GEMINI_API_KEY', '')).strip() or _RUNTIME_KEYS.get('gemini_api_key', '')
 
             # ── Known items from DB ────────────────────────────────────────────
             with get_db_connection() as conn2:
@@ -1305,8 +1305,8 @@ def get_settings():
 
     return {
         # Check env var first (persistent), then runtime in-memory store (session, set via Settings UI)
-        'openweather_key_set': bool(os.environ.get('OPENWEATHER_API_KEY', '').strip() or _RUNTIME_KEYS.get('openweather_api_key', '')),
-        'gemini_key_set':      bool(os.environ.get('GEMINI_API_KEY', '').strip() or _RUNTIME_KEYS.get('gemini_api_key', '')),
+        'openweather_key_set': bool(os.getenv("WEATHER_API_KEY", "").strip() or os.environ.get('OPENWEATHER_API_KEY', '').strip() or _RUNTIME_KEYS.get('openweather_api_key', '')),
+        'gemini_key_set':      bool(os.getenv("GEMINI_API_KEY", "").strip() or os.environ.get('GEMINI_API_KEY', '').strip() or _RUNTIME_KEYS.get('gemini_api_key', '')),
         'latitude':            cfg.get('latitude', None),
         'longitude':           cfg.get('longitude', None),
         'weather_source':      cfg.get('weather_source', 'mock'),

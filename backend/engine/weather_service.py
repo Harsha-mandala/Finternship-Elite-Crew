@@ -75,7 +75,7 @@ def _save_config(updates: dict) -> None:
 
 def _read_api_key() -> str:
     """Read API key from environment variable only. config.json must not store keys."""
-    return os.environ.get('OPENWEATHER_API_KEY', '').strip()
+    return (os.getenv("WEATHER_API_KEY") or os.environ.get('OPENWEATHER_API_KEY', '')).strip()
 
 
 def _get_coordinates() -> tuple:
