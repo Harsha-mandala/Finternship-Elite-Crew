@@ -1192,6 +1192,9 @@ def recommendation_accuracy(days: int = Query(default=14, ge=1, le=90)):
                 COALESCE(r.merchant_override, r.recommended_qty) AS final_qty,
                 COALESCE(s.actual_qty, 0) AS actual_qty
             FROM recommendations r
+            INNER JOIN (
+                SELECT DISTINCT date FROM daily_sales
+            ) ds_dates ON r.date = ds_dates.date
             LEFT JOIN (
                 SELECT date, item_name, SUM(qty_sold) AS actual_qty
                 FROM daily_sales
