@@ -86,20 +86,66 @@ function initHeader() {
 }
 
 // ── API Status Dot ─────────────────────────────────────────────────────────────
+// Render free-tier cold-starts can take 30-50s. Strategy:
+//   • First attempt: 35s timeout — if OK → green, if timeout → show yellow "waking"
+//   • Auto-retry after 30s (one more chance before going red)
+let _apiWaking = false;
+let _wakeRetryTimer = null;
+
+async function _pingHealth(timeoutMs) {
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    // Use /ping (lightweight, no DB query) to check if server is alive
+    const res = await fetch(`${BASE_URL}/ping`, { signal: controller.signal });
+    clearTimeout(tid);
+    return res.ok;
+  } catch {
+    clearTimeout(tid);
+    return false;
+  }
+}
+
 async function checkApiStatus() {
   const dot = document.getElementById('api-dot');
   if (!dot) return;
-  try {
-    const res = await fetch(`${BASE_URL}/health`, { signal: AbortSignal.timeout(10000) });
-    if (res.ok) {
-      dot.classList.add('online');
-      dot.classList.remove('offline');
-      dot.title = 'API Online ✓';
-    } else throw new Error();
-  } catch {
+
+  // Quick 5s check first — if already awake, respond instantly
+  const quick = await _pingHealth(5000);
+  if (quick) {
+    dot.style.background = '';
+    dot.classList.add('online');
+    dot.classList.remove('offline');
+    dot.title = 'API Online ✓';
+    _apiWaking = false;
+    clearTimeout(_wakeRetryTimer);
+    return;
+  }
+
+  // Server didn't respond in 5s — could be cold-starting. Show yellow.
+  dot.classList.remove('online', 'offline');
+  dot.style.background = '#f59e0b';
+  dot.style.boxShadow = '0 0 6px #f59e0b';
+  dot.title = 'API waking up (Render cold start)…';
+  _apiWaking = true;
+
+  // Wait up to 40s for cold start to complete
+  const waking = await _pingHealth(40000);
+  if (waking) {
+    dot.style.background = '';
+    dot.style.boxShadow = '';
+    dot.classList.add('online');
+    dot.classList.remove('offline');
+    dot.title = 'API Online ✓';
+    _apiWaking = false;
+  } else {
+    // Genuinely offline
+    dot.style.background = '';
+    dot.style.boxShadow = '';
     dot.classList.add('offline');
     dot.classList.remove('online');
-    dot.title = 'API Offline — using mock data';
+    dot.title = 'API Offline — backend may be down';
+    _apiWaking = false;
   }
 }
 
@@ -139,7 +185,14 @@ if (typeof Chart !== 'undefined') {
 function initApp() {
   initHeader();
   checkApiStatus();
-  setInterval(checkApiStatus, 60000);
+  setInterval(checkApiStatus, 90000);   // Re-check every 90s
+
+  // ── Keepalive: ping every 10 min to prevent Render free-tier from sleeping ──
+  // Render spins down after 15 min of inactivity. A silent ping keeps it awake
+  // while any browser tab has the app open.
+  setInterval(() => {
+    fetch(`${BASE_URL}/ping`, { method: 'GET', cache: 'no-store' }).catch(() => {});
+  }, 10 * 60 * 1000);  // 10 minutes
 
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => navigateTo(btn.dataset.screen));

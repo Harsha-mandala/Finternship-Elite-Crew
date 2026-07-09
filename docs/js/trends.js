@@ -22,7 +22,6 @@ function renderTrends(container) {
         <button class="tab-btn active" id="tab-revenue" onclick="switchTab('revenue', this)">📈 Revenue</button>
         <button class="tab-btn" id="tab-category" onclick="switchTab('category', this)">🏷️ Categories</button>
         <button class="tab-btn" id="tab-item" onclick="switchTab('item', this)">🔍 Item Deep Dive</button>
-        <button class="tab-btn" id="tab-accuracy" onclick="switchTab('accuracy', this)">🎯 Accuracy</button>
       </div>
 
       <!-- Date Range Selector -->
@@ -118,58 +117,14 @@ function renderTrends(container) {
         </div>
       </div>
 
-      <!-- Accuracy Tab -->
-      <div id="tab-panel-accuracy" style="display:none">
-        <!-- Overview summary cards -->
-        <div class="stat-row" style="margin-bottom:10px;">
-          <div class="stat-card card">
-            <div class="stat-label">Model Accuracy ${infoTip('accuracyScore')}</div>
-            <div class="stat-value primary" id="accuracy-score-val">--%</div>
-          </div>
-          <div class="stat-card card">
-            <div class="stat-label">Average Error (MAE) ${infoTip('mae')}</div>
-            <div class="stat-value" id="accuracy-mae-val">-- units</div>
-          </div>
-        </div>
-
-        <!-- MAE Trend Chart -->
-        <div class="card chart-card">
-          <div class="card-title">Prediction Error Trend (MAE over time)</div>
-          <canvas id="accuracy-trend-chart" height="200"></canvas>
-        </div>
-
-        <!-- Per-item MAE table -->
-        <div class="card" style="padding:16px">
-          <div class="card-title" style="margin-bottom:12px">Per-Item Prediction Accuracy</div>
-          <div style="font-size:12px;color:var(--color-text-dim);margin-bottom:12px;line-height:1.5">
-            Mean Absolute Error (MAE) measures the average difference (in plates/units) between what the AI recommended and what you actually sold. Lower MAE means higher accuracy.
-          </div>
-          <div style="overflow-x:auto">
-            <table class="pred-table" style="width:100%; border-collapse:collapse">
-              <thead>
-                <tr style="border-bottom:1.5px solid var(--color-border); text-align:left">
-                  <th style="padding:8px 6px">Item Name</th>
-                  <th style="padding:8px 6px;text-align:right">Avg Error (MAE)</th>
-                  <th style="padding:8px 6px;text-align:right">Data Points</th>
-                </tr>
-              </thead>
-              <tbody id="accuracy-table-body">
-                <tr>
-                  <td colspan="3" style="text-align:center;padding:20px;color:var(--color-text-dim)">
-                    Loading accuracy report...
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
+      <!-- ACCURACY TAB HIDDEN FOR SUBMISSION (restore when ready)
+      See loadAccuracyData() function below for full implementation. -->
     </div>
   `;
 
   loadRevenueTrendsData();
   loadCategoryData();
-  loadAccuracyData();
+  // loadAccuracyData(); // HIDDEN FOR SUBMISSION — restore this line to re-enable
   loadItemSelectorOptions();
 }
 
@@ -186,7 +141,7 @@ async function applyTrendsFilter() {
   showToast('Applying date filter...', '');
   await loadRevenueTrendsData();
   await loadCategoryData();
-  await loadAccuracyData();
+  // await loadAccuracyData(); // HIDDEN FOR SUBMISSION — restore this line to re-enable
   const selector = document.getElementById('item-selector');
   if (selector && selector.value) {
     await loadItemTrend();
@@ -484,81 +439,10 @@ function switchTab(tab, btn) {
   _activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  ['revenue','category','item','accuracy'].forEach(t => {
+  ['revenue','category','item'].forEach(t => {  // 'accuracy' hidden for submission
     const el = document.getElementById(`tab-panel-${t}`);
     if (el) el.style.display = t === tab ? 'block' : 'none';
   });
-}
-
-async function loadAccuracyData() {
-  const tableBody = document.getElementById('accuracy-table-body');
-  if (!tableBody) return;
-
-  tableBody.innerHTML = `<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--color-text-dim)">Loading accuracy report...</td></tr>`;
-
-  // Fetch accuracy over the last 14 days (or calculated from date range picker)
-  const range = getSelectedDateRange();
-  let days = 14;
-  if (range) {
-    days = Math.max(1, Math.round((new Date(range.endDate) - new Date(range.startDate)) / 86400000));
-  }
-
-  const data = await API.getAccuracy(days);
-  if (!data || !data.items || !data.items.length) {
-    tableBody.innerHTML = `<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--color-text-dim)">No prediction logs available to measure accuracy. Keep using the app and logging sales!</td></tr>`;
-    setIf('accuracy-score-val', 'N/A');
-    setIf('accuracy-mae-val', 'N/A');
-    destroyChart('accuracyTrend');
-    return;
-  }
-
-  // Set stats
-  setIf('accuracy-score-val', `${data.overall_accuracy || 0}%`);
-  setIf('accuracy-mae-val', `${data.overall_mae || 0} units`);
-
-  // Render Table
-  tableBody.innerHTML = data.items.map(it => `
-    <tr style="border-bottom:1px solid var(--color-border)">
-      <td style="padding:8px 6px;color:var(--color-text);font-size:13px">${it.item_name}</td>
-      <td style="padding:8px 6px;text-align:right;font-weight:600;color:${it.mae > 5 ? 'var(--color-danger)' : (it.mae > 2.5 ? 'var(--color-warning)' : 'var(--color-success)')};font-size:13px">${it.mae} units</td>
-      <td style="padding:8px 6px;text-align:right;color:var(--color-text-dim);font-size:12px">${it.records} days</td>
-    </tr>
-  `).join('');
-
-  // Render Daily Error Trend Chart
-  const el = document.getElementById('accuracy-trend-chart');
-  if (el && data.daily_series && data.daily_series.length) {
-    destroyChart('accuracyTrend');
-    const ctx = el.getContext('2d');
-    const labels = data.daily_series.map(d => {
-      const dt = new Date(d.date + 'T00:00:00');
-      return dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-    });
-    const values = data.daily_series.map(d => d.mae);
-
-    _trendsCharts['accuracyTrend'] = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          data: values,
-          borderColor: '#EF4444',
-          backgroundColor: createGradient(ctx, '#EF4444'),
-          borderWidth: 2, fill: true, tension: 0.3,
-          pointRadius: 2,
-          pointBackgroundColor: '#EF4444'
-        }]
-      },
-      options: {
-        ...lineOpts(' units', false, 0),
-        plugins: {
-          legend: { display: false }
-        }
-      }
-    });
-  } else {
-    destroyChart('accuracyTrend');
-  }
 }
 
 // ── Chart helpers ──────────────────────────────────────────────────────────────
