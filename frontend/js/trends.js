@@ -22,7 +22,6 @@ function renderTrends(container) {
         <button class="tab-btn active" id="tab-revenue" onclick="switchTab('revenue', this)">📈 Revenue</button>
         <button class="tab-btn" id="tab-category" onclick="switchTab('category', this)">🏷️ Categories</button>
         <button class="tab-btn" id="tab-item" onclick="switchTab('item', this)">🔍 Item Deep Dive</button>
-        <button class="tab-btn" id="tab-accuracy" onclick="switchTab('accuracy', this)">🎯 Accuracy</button>
       </div>
 
       <!-- Date Range Selector -->
@@ -118,58 +117,14 @@ function renderTrends(container) {
         </div>
       </div>
 
-      <!-- Accuracy Tab -->
-      <div id="tab-panel-accuracy" style="display:none">
-        <!-- Overview summary cards -->
-        <div class="stat-row" style="margin-bottom:10px;">
-          <div class="stat-card card">
-            <div class="stat-label">Model Accuracy ${infoTip('accuracyScore')}</div>
-            <div class="stat-value primary" id="accuracy-score-val">--%</div>
-          </div>
-          <div class="stat-card card">
-            <div class="stat-label">Average Error (MAE) ${infoTip('mae')}</div>
-            <div class="stat-value" id="accuracy-mae-val">-- units</div>
-          </div>
-        </div>
-
-        <!-- MAE Trend Chart -->
-        <div class="card chart-card">
-          <div class="card-title">Prediction Error Trend (MAE over time)</div>
-          <canvas id="accuracy-trend-chart" height="200"></canvas>
-        </div>
-
-        <!-- Per-item MAE table -->
-        <div class="card" style="padding:16px">
-          <div class="card-title" style="margin-bottom:12px">Per-Item Prediction Accuracy</div>
-          <div style="font-size:12px;color:var(--color-text-dim);margin-bottom:12px;line-height:1.5">
-            Mean Absolute Error (MAE) measures the average difference (in plates/units) between what the AI recommended and what you actually sold. Lower MAE means higher accuracy.
-          </div>
-          <div style="overflow-x:auto">
-            <table class="pred-table" style="width:100%; border-collapse:collapse">
-              <thead>
-                <tr style="border-bottom:1.5px solid var(--color-border); text-align:left">
-                  <th style="padding:8px 6px">Item Name</th>
-                  <th style="padding:8px 6px;text-align:right">Avg Error (MAE)</th>
-                  <th style="padding:8px 6px;text-align:right">Data Points</th>
-                </tr>
-              </thead>
-              <tbody id="accuracy-table-body">
-                <tr>
-                  <td colspan="3" style="text-align:center;padding:20px;color:var(--color-text-dim)">
-                    Loading accuracy report...
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
+      <!-- ACCURACY TAB HIDDEN FOR SUBMISSION (restore when ready)
+      See loadAccuracyData() function below for full implementation. -->
     </div>
   `;
 
   loadRevenueTrendsData();
   loadCategoryData();
-  loadAccuracyData();
+  // loadAccuracyData(); // HIDDEN FOR SUBMISSION — restore this line to re-enable
   loadItemSelectorOptions();
 }
 
@@ -186,7 +141,7 @@ async function applyTrendsFilter() {
   showToast('Applying date filter...', '');
   await loadRevenueTrendsData();
   await loadCategoryData();
-  await loadAccuracyData();
+  // await loadAccuracyData(); // HIDDEN FOR SUBMISSION — restore this line to re-enable
   const selector = document.getElementById('item-selector');
   if (selector && selector.value) {
     await loadItemTrend();
@@ -484,7 +439,7 @@ function switchTab(tab, btn) {
   _activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  ['revenue','category','item','accuracy'].forEach(t => {
+  ['revenue','category','item'].forEach(t => {  // 'accuracy' hidden for submission
     const el = document.getElementById(`tab-panel-${t}`);
     if (el) el.style.display = t === tab ? 'block' : 'none';
   });
