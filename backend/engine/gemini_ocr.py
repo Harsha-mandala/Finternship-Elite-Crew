@@ -1,8 +1,12 @@
 """
 gemini_ocr.py — Gemini-powered PDF OCR for Hotel Aditya Grand sales bills.
 
-Model fallback chain (best → acceptable):
-  gemini-3.5-flash → gemini-3.0-flash → gemini-2.5-flash → gemma-4-31b-it
+Model fallback chain (priority order):
+  1. gemini-2.5-flash        ← Start here (best available)
+  2. gemini-2.5-flash-lite   ← If 2.5-flash quota exhausted
+  3. gemini-3.0-flash        ← Next fallback
+  4. gemini-3.1-flash-lite   ← Next fallback
+  5. gemini-1.5-flash        ← Final safety net
 
 Retry logic:
   - 429 (rate-limit / RPD exhausted): wait RATE_LIMIT_WAIT_SECONDS then try next model
@@ -35,28 +39,13 @@ from datetime import date
 import urllib.request
 import urllib.error
 
-# ── Model fallback chain (best to acceptable) ──────────────────────────────────
+# ── Model fallback chain (priority order — best first) ───────────────────────
 MODELS = [
-    # Gemini 2.0 Family (Fast, active, default)
-    "gemini-2.0-flash",
-
-    # Gemini 1.5 Family (Robust production fallback)
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-
-    # Gemini 3.5 Generation (Hypothetical future/preview models)
-    "gemini-3.5-pro",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-
-    # Gemini 3.1 Generation (Hypothetical future/preview models)
-    "gemini-3.1-pro",
-    "gemini-3.1-flash",
-    "gemini-3.1-flash-lite",
-
-    # Gemini 3.0 Family (Hypothetical future/preview models)
-    "gemini-3.0-pro",
-    "gemini-3.0-flash",
+    "gemini-2.5-flash",          # 1st: Best available — start here
+    "gemini-2.5-flash-lite",     # 2nd: Lighter 2.5 — if 2.5-flash quota hit
+    "gemini-3.0-flash",          # 3rd: Gemini 3.0 family
+    "gemini-3.1-flash-lite",     # 4th: Gemini 3.1 lite
+    "gemini-1.5-flash",          # 5th: Reliable production safety net
 ]
 
 RATE_LIMIT_WAIT_SECONDS  = 65   # wait when quota (429) hit; then try next model
@@ -344,7 +333,7 @@ def process_pdf_with_gemini(file_bytes: bytes, api_key: str, known_items: list, 
 def reset_model_index():
     """Reset to the best (first) model. Call after a long idle period."""
     APP_STATE["model_idx"] = 0
-    print("[gemini_ocr] Model index reset to 0 (gemini-2.0-flash)")
+    print("[gemini_ocr] Model index reset to 0 (gemini-2.5-flash)")
 
 
 def get_current_model() -> str:
